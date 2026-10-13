@@ -36,7 +36,7 @@ Repository = "https://github.com/Srivatsa03/smcp-gateway"
 Paper = "https://arxiv.org/abs/2602.01129"
 
 [tool.setuptools]
-packages = ["smcp_gateway"]
+packages = ["smcp_gateway", "smcp_gateway.bench"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
