@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smcp-gateway"
+version = "0.1.0"
+description = "Reference gateway for the Secure Model Context Protocol (SMCP, arXiv:2602.01129), with an attack bench over the paper's 26 MCP risks."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Srivatsa Kamballa" }]
+keywords = ["mcp", "smcp", "llm", "security", "agents", "authentication", "audit", "ai-security"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Security",
+]
+dependencies = ["cryptography>=42", "pyyaml>=6"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+smcp-gateway = "smcp_gateway.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Srivatsa03/smcp-gateway"
+Repository = "https://github.com/Srivatsa03/smcp-gateway"
+Paper = "https://arxiv.org/abs/2602.01129"
+
+[tool.setuptools]
+packages = ["smcp_gateway"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
