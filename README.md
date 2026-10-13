@@ -1,5 +1,7 @@
 # smcp-gateway
 
+[![tests](https://github.com/Srivatsa03/smcp-gateway/actions/workflows/tests.yml/badge.svg)](https://github.com/Srivatsa03/smcp-gateway/actions/workflows/tests.yml)
+
 A working implementation of the Secure Model Context Protocol (SMCP) from
 [arXiv:2602.01129](https://arxiv.org/abs/2602.01129), and an attack bench that
 measures what it stops.
