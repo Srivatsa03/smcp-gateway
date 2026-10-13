@@ -1,0 +1,289 @@
+{
+  "tool": "smcp-gateway 0.1.0",
+  "paper": "arXiv:2602.01129",
+  "python": "3.12.9",
+  "platform": "macOS-26.3-arm64-arm-64bit",
+  "date": "2026-10-13",
+  "rows": [
+    {
+      "step": 1,
+      "risk": "Unauthenticated Access",
+      "attack": "call without a hello; hello signed with the wrong key; a rogue gateway answering the agent",
+      "baseline": "call succeeds (MCP stdio has no authentication)",
+      "smcp": "blocked",
+      "evidence": "no hello -> no authenticated SMCP session on this connection (the client sent no smcp/hello); impersonation -> SMCP authentication failed: the hello signature does not verify against the registered key of report; rogue gateway -> the serverHello signature does not verify against the registry",
+      "control": "4.2 mutual authentication"
+    },
+    {
+      "step": 1,
+      "risk": "Session Management Flaws",
+      "attack": "replay a captured call; reuse it on another connection; forge a MAC; use an expired session",
+      "baseline": "replayed call executes twice",
+      "smcp": "blocked",
+      "evidence": "replay -> replayed or out-of-order call (seq 1, last accepted 1); other connection -> the envelope is bound to a different session; forged MAC -> the envelope MAC does not verify with this session's key; expired -> the SMCP session has expired; open a new session",
+      "control": "4.2 session binding, per-call MAC and seq"
+    },
+    {
+      "step": 3,
+      "risk": "Namespace Typosquatting",
+      "attack": "server advertises query_sa1es next to the registered query_sales",
+      "baseline": "'query_sa1es' is listed and callable",
+      "smcp": "blocked",
+      "evidence": "hidden from tools/list (typosquat: 'query_sa1es' imitates registered tool 'query_sales'); direct call denied",
+      "control": "4.1 registry vetting"
+    },
+    {
+      "step": 3,
+      "risk": "Tool Name Conflict",
+      "attack": "server advertises transfer_funds, which is registered to the payments server",
+      "baseline": "'transfer_funds' is listed and callable",
+      "smcp": "blocked",
+      "evidence": "hidden from tools/list (name_conflict: 'transfer_funds' is registered to payments, not to this server); direct call denied",
+      "control": "4.1 registry vetting"
+    },
+    {
+      "step": 3,
+      "risk": "Tool Poisoning",
+      "attack": "a registered tool's description tells the agent to read ~/.ssh/id_rsa",
+      "baseline": "hidden instruction reaches the agent",
+      "smcp": "missed",
+      "evidence": "the description was pinned at registration, so it passes vetting and reaches the agent with an SMCP security label attached",
+      "control": "none: registration pins content, it does not judge it"
+    },
+    {
+      "step": 3,
+      "risk": "Command Injection",
+      "attack": "convert_file('q3.docx; id') by an authorised agent",
+      "baseline": "injected command runs",
+      "smcp": "missed",
+      "evidence": "SMCP checks who calls and what they may call; it does not look at argument content",
+      "control": "none: no input validation in the design"
+    },
+    {
+      "step": 3,
+      "risk": "Rug Pulls",
+      "attack": "get_weather's description changes after registration",
+      "baseline": "'get_weather' is listed and callable",
+      "smcp": "blocked",
+      "evidence": "hidden from tools/list (definition_changed: 'get_weather' no longer matches the definition pinned at registration (possible rug pull)); direct call denied",
+      "control": "4.1 registry vetting"
+    },
+    {
+      "step": 3,
+      "risk": "Cross-Server Shadowing",
+      "attack": "a registered tool's description rewrites how send_email behaves",
+      "baseline": "hidden instruction reaches the agent",
+      "smcp": "missed",
+      "evidence": "the description was pinned at registration, so it passes vetting and reaches the agent with an SMCP security label attached",
+      "control": "none: registration pins content, it does not judge it"
+    },
+    {
+      "step": 5,
+      "risk": "Prompt Injection",
+      "attack": "an admin's agent is talked into delete_user and declares riskLevel=low",
+      "baseline": "delete runs",
+      "smcp": "missed",
+      "evidence": "riskLevel is declared by the calling agent. The same call declared 'high' is denied, so the rule works only while the agent is not fooled",
+      "control": "4.4 policy on riskLevel (self-reported)"
+    },
+    {
+      "step": 5,
+      "risk": "Indirect Prompt Injection",
+      "attack": "fetched page tells the agent to email data to the attacker; the agent does",
+      "baseline": "both calls succeed",
+      "smcp": "missed",
+      "evidence": "each call is authorised on its own (public fetch, internal email), so both pass",
+      "control": "none: per-call policy cannot see intent carried across calls"
+    },
+    {
+      "step": 6,
+      "risk": "Installer Spoofing",
+      "attack": "-",
+      "baseline": "-",
+      "smcp": "not tested",
+      "evidence": "happens before any MCP session exists; needs package signing at registration",
+      "control": ""
+    },
+    {
+      "step": 6,
+      "risk": "Preference Manipulation",
+      "attack": "-",
+      "baseline": "-",
+      "smcp": "not tested",
+      "evidence": "same path as Tool Poisoning: a registered description is trusted as pinned",
+      "control": ""
+    },
+    {
+      "step": 7,
+      "risk": "Remote Code Execution",
+      "attack": "-",
+      "baseline": "-",
+      "smcp": "not tested",
+      "evidence": "same path as Command Injection: argument content is not inspected",
+      "control": ""
+    },
+    {
+      "step": 7,
+      "risk": "SQL Injection",
+      "attack": "run_report with \"' OR '1'='1\" returns another tenant's rows",
+      "baseline": "other tenant's rows returned",
+      "smcp": "missed",
+      "evidence": "the caller is authorised for run_report; the leak happens inside the tool",
+      "control": "none: no input validation in the design"
+    },
+    {
+      "step": 7,
+      "risk": "Credential Theft",
+      "attack": "attacker uses a stolen agent key plus a live delegation token",
+      "baseline": "no credentials needed in the first place",
+      "smcp": "missed",
+      "evidence": "with the key, the attacker is the agent; revocation (see Privilege Persistence) is the only cut-off",
+      "control": "4.1 revocation, after the fact"
+    },
+    {
+      "step": 7,
+      "risk": "Sandbox Escape",
+      "attack": "-",
+      "baseline": "-",
+      "smcp": "not tested",
+      "evidence": "a property of how the server is isolated, below the protocol",
+      "control": ""
+    },
+    {
+      "step": 8,
+      "risk": "Tool Chaining Abuse",
+      "attack": "read_file(customers.csv) then http_post to the attacker",
+      "baseline": "data leaves",
+      "smcp": "missed",
+      "evidence": "each call is permitted alone; secret redaction does not cover ordinary personal data",
+      "control": "none: decisions are per call"
+    },
+    {
+      "step": 8,
+      "risk": "Unauthorized Access",
+      "attack": "a registered agent that is not on query_sales' allowedDelegators calls it",
+      "baseline": "call succeeds",
+      "smcp": "blocked",
+      "evidence": "agent rogue is not an allowed delegate for this tool",
+      "control": "4.3.3 allowedDelegators"
+    },
+    {
+      "step": 8,
+      "risk": "Privilege Abuse",
+      "attack": "aal1 agent on an aal2 tool; agent forges a delegation from the admin; analyst's agent calls delete_user",
+      "baseline": "all calls succeed",
+      "smcp": "blocked",
+      "evidence": "aal1 agent -> session assurance aal1 is below the tool's minimum aal2; forged delegation -> signature on the delegation from bob does not verify; analyst's agent on delete_user -> user alice (org ORG-ACME, roles ['data_analyst']) is not an allowed delegator for this tool; delegated scopes ['crm_read', 'sales_reporting'] do not cover the required scopes ['user_admin']",
+      "control": "4.3.3 minIdentityAssurance, signed delegation, requiredScopes"
+    },
+    {
+      "step": 8,
+      "risk": "Path Traversal",
+      "attack": "read_file('../../etc/passwd') by an authorised agent",
+      "baseline": "file contents returned",
+      "smcp": "missed",
+      "evidence": "argument content is not inspected; /etc/passwd lines are not secrets to the redactor",
+      "control": "none: no input validation in the design"
+    },
+    {
+      "step": 9,
+      "risk": "Resource Content Poisoning",
+      "attack": "tool output carries an injected instruction back to the agent",
+      "baseline": "poisoned output delivered",
+      "smcp": "missed",
+      "evidence": "delivered intact and signed by the gateway (signature valid: True). The signature proves where the text came from. It says nothing about whether it is safe",
+      "control": "none: obligations act on fields and secrets, not instructions"
+    },
+    {
+      "step": 9,
+      "risk": "Token Passthrough",
+      "attack": "AWS keys in tool output; SMCP credentials riding along to the server",
+      "baseline": "keys reach the agent",
+      "smcp": "blocked",
+      "evidence": "keys redacted (yes); smcp/* metadata and agent identity never reached the server (yes)",
+      "control": "4.3.3 dataPolicy.requiresRedaction; gateway strips smcp/* upstream"
+    },
+    {
+      "step": 10,
+      "risk": "Cross-Tenant Data Exposure",
+      "attack": "a GLOBEX user's agent queries ACME's sales tool",
+      "baseline": "ACME rows returned",
+      "smcp": "blocked",
+      "evidence": "user mallory (org ORG-GLOBEX, roles ['data_analyst']) is not an allowed delegator for this tool",
+      "control": "4.3.3 allowedDelegators (allowedOrgIds)"
+    },
+    {
+      "step": 11,
+      "risk": "Vulnerable Versions",
+      "attack": "server runs 1.3.0; the registry pins 1.4.2",
+      "baseline": "connects without question",
+      "smcp": "partial",
+      "evidence": "the upstream server reports version '1.3.0' and the registry pins '1.4.2'. The check trusts serverInfo.version, which the server reports about itself",
+      "control": "4.1.4 registration (environment digest reduced to a version pin)"
+    },
+    {
+      "step": 11,
+      "risk": "Privilege Persistence",
+      "attack": "agent is revoked in the registry while its session is open",
+      "baseline": "nothing to revoke: access continues",
+      "smcp": "blocked",
+      "evidence": "next call on the same session -> agent report is revoked or suspended in the registry",
+      "control": "4.1.4 lifecycle, re-checked on every call"
+    },
+    {
+      "step": 11,
+      "risk": "Configuration Drift",
+      "attack": "-",
+      "baseline": "-",
+      "smcp": "not tested",
+      "evidence": "not prevented; every audit entry records registry and policy hashes, so drift is visible afterwards",
+      "control": ""
+    }
+  ],
+  "summary": {
+    "blocked": 10,
+    "partial": 1,
+    "missed": 10,
+    "not tested": 5
+  },
+  "integrity": [
+    {
+      "check": "Response tampering in transit",
+      "result": "detected",
+      "evidence": "edited result -> the result was modified after the gateway signed it; edited signed metadata -> the response signature does not verify"
+    },
+    {
+      "check": "Audit log tampering",
+      "result": "detected",
+      "evidence": "edited DENIED->SUCCESS: caught at line 6; deleted a middle entry: caught at line 3; cut the last entry: NOT caught (needs an external anchor)"
+    }
+  ],
+  "latency": {
+    "stdio": {
+      "plain_mcp": {
+        "median_ms": 0.04,
+        "p95_ms": 0.052,
+        "n": 300
+      },
+      "smcp_gateway": {
+        "median_ms": 0.648,
+        "p95_ms": 0.719,
+        "n": 300
+      },
+      "overhead_median_ms": 0.608
+    },
+    "inprocess": {
+      "handshake": {
+        "median_ms": 1.125,
+        "p95_ms": 1.168,
+        "n": 200
+      },
+      "call": {
+        "median_ms": 0.499,
+        "p95_ms": 0.553,
+        "n": 200
+      },
+      "note": "client + gateway work in one process, no IPC; includes the audit write"
+    }
+  }
+}
