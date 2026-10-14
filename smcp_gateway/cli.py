@@ -218,6 +218,15 @@ def cmd_bench(args, _) -> int:
     return bench_main(json_out=args.json, markdown_out=args.markdown, calls=args.calls, keep=args.keep)
 
 
+def cmd_llm_bench(args, _) -> int:
+    from .bench.llm import PROFILES, main as llm_main
+    profiles = tuple(p for p in (args.profiles or ",".join(PROFILES)).split(",") if p)
+    return llm_main(models=args.model or [], trials=args.trials, provider=args.provider, base_url=args.base_url,
+                    key_env=args.key_env, temperature=args.temperature, profiles=profiles,
+                    scenarios=args.scenario, json_out=args.json, markdown_out=args.markdown,
+                    list_models=args.list_models, resume=args.resume, rescore=args.rescore)
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="smcp-gateway",
                                  description="Reference gateway for the Secure Model Context Protocol (SMCP).")
@@ -304,6 +313,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--profile", choices=["paper", "extended"], default="paper",
                    help="the paper's design, or with this project's extensions")
     p.set_defaults(func=cmd_init)
+
+    p = sub.add_parser("llm-bench", help="put a real model (OpenAI-compatible API, e.g. Groq) in the agent's seat")
+    p.add_argument("--model", action="append", help="model id (repeatable)")
+    p.add_argument("--provider", default="groq", choices=["groq", "openai"])
+    p.add_argument("--base-url", help="any OpenAI-compatible endpoint")
+    p.add_argument("--key-env", help="the environment variable that holds the API key")
+    p.add_argument("--trials", type=int, default=3)
+    p.add_argument("--temperature", type=float, default=0.6)
+    p.add_argument("--profiles", help="comma-separated: none,paper,extended")
+    p.add_argument("--scenario", action="append", help="run only these scenarios (repeatable)")
+    p.add_argument("--json")
+    p.add_argument("--markdown")
+    p.add_argument("--list-models", action="store_true")
+    p.add_argument("--resume", help="an earlier --json report: keep its finished runs, run the rest")
+    p.add_argument("--rescore", help="an earlier --json report: score it again, no model calls")
+    p.set_defaults(func=cmd_llm_bench)
 
     p = sub.add_parser("bench", help="run the attack bench (26 risks, both profiles) and the latency check")
     p.add_argument("--json")
