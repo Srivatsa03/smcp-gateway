@@ -12,6 +12,7 @@ from __future__ import annotations
 import time
 
 from .crypto import nonce, sign, verify
+from .protocol import new_ref
 from .registry import Entity, Registry
 
 RISK = ("low", "medium", "high", "critical")
@@ -47,6 +48,7 @@ def issue_delegation(
     now = time.time() if now is None else now
     body = {
         "type": "SMCP.Delegation",
+        "tokenId": new_ref("DT"),
         "delegator": delegator_id,
         "delegate": delegate_id,
         "scopes": sorted(set(scopes)),
@@ -55,6 +57,11 @@ def issue_delegation(
         "nonce": nonce(),
     }
     return {**body, "signature": sign(key, body)}
+
+
+def token_id(token: dict) -> str:
+    """A delegation token's id: ``tokenId``, or its nonce for tokens issued without one."""
+    return str(token.get("tokenId") or token.get("nonce"))
 
 
 def link(entity: Entity) -> dict:
@@ -80,8 +87,9 @@ def verify_chain(
 
     Rules: the chain starts at a user, each token is signed by its delegator,
     each token's delegate is the next token's delegator, the last delegate is the
-    calling agent, every delegator is still active, and nothing is expired.
-    Scopes can only narrow along the chain (intersection).
+    calling agent, every delegator is still active, nothing is expired, and no
+    token is on the registry's ``revokedDelegations`` list. Scopes can only
+    narrow along the chain (intersection).
     """
     if not isinstance(tokens, list):
         raise DelegationError("delegation must be a list of tokens")
@@ -110,6 +118,8 @@ def verify_chain(
             raise DelegationError(f"delegation token {i} has no valid lifetime") from None
         if not (not_before - skew <= now <= not_after):
             raise DelegationError(f"the delegation from {delegator.label} is expired or not yet valid")
+        if token_id(body) in registry.revoked_delegations:
+            raise DelegationError(f"the delegation from {delegator.label} ({token_id(body)}) is revoked")
         tok_scopes = set(body.get("scopes") or [])
         scopes = tok_scopes if scopes is None else scopes & tok_scopes
         chain.append(link(delegator))

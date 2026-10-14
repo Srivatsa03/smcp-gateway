@@ -1,10 +1,10 @@
-"""The SMCP gateway: an enforcing MCP stdio proxy in front of an unmodified server.
+"""The SMCP gateway: an enforcing MCP proxy in front of an unmodified server.
 
 The paper places the Policy Enforcement Point at the tool service. A gateway that
 runs the real server as a subprocess gets the same position without changing the
 server: every message to and from the server passes through here.
 
-Per connection it does five things, mapped to the paper:
+Per session it does five things, mapped to the paper:
 
 * 4.2  mutual authentication on ``initialize`` and a session key
 * 4.1  registry vetting of every tool the server lists (unregistered, typosquat,
@@ -13,8 +13,17 @@ Per connection it does five things, mapped to the paper:
 * 4.4  a policy decision, then obligations applied to the result
 * 4.5  a signed, hash-chained audit entry for every decision
 
+and, where configured, this project's extensions: description scanning,
+argument guards, session flow labels with a gateway-assessed risk level, user
+approval for high-stakes calls, output scanning, server artifact pinning,
+signed config, and a policy on server-to-client requests.
+
 It fails closed: a call without a valid session, envelope or registry entry is
 answered with a signed denial and never reaches the server.
+
+One ``Gateway`` object serves one MCP session. ``Deployment`` holds what all
+sessions share (keys, registry, policy, audit log, handshake nonce cache), so the
+HTTP transport can run many sessions against one deployment.
 """
 
 from __future__ import annotations
@@ -26,27 +35,53 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, TextIO
 
 import yaml
 
+from . import approval as _approval
 from . import obligations as obl
 from .audit import AuditLog
-from .context import RISK, DelegationError, link, verify_chain
+from .context import RISK, DelegationError, link, rank, token_id, verify_chain
 from .crypto import (b64d, canonical, digest, ephemeral, load_key, mac_ok, nonce,
                      public_b64, session_key, sign, verify)
+from .flow import FlowState
+from .launch import FileVerifier, check_artifact
 from .policy import Decision, PolicyEngine
-from .protocol import (CALL, HELLO, RESPONSE, SECURITY, SERVER_HELLO, VERSION,
+from .protocol import (APPROVAL, CALL, HELLO, RESPONSE, SECURITY, SERVER_HELLO, VERSION,
                        new_ref, new_session_id, result_without_response, transcript)
 from .registry import Registry, ToolRecord, definition_hash
 
-NO_OBLIGATIONS = {"redactedFields": [], "truncated": False, "secretsRedacted": []}
+NO_OBLIGATIONS = obl.empty_applied()
+
+# client capabilities a server needs before it may send these requests
+SERVER_REQUEST_CAPABILITY = {"sampling/createMessage": "sampling", "elicitation/create": "elicitation",
+                             "roots/list": "roots"}
+# client requests that need an established session, like tools/call
+SESSION_GATED = ("resources/", "prompts/", "completion/")
 
 
 class AuthError(Exception):
     pass
+
+
+class NonceCache:
+    """Handshake nonces seen recently. Shared by every session of a deployment."""
+
+    def __init__(self) -> None:
+        self._seen: dict[str, float] = {}
+        self._lock = threading.Lock()
+
+    def add(self, value: str, now: float, window: float) -> bool:
+        """Record ``value``. False if it was already seen within the window."""
+        with self._lock:
+            self._seen = {k: t for k, t in self._seen.items() if now - t <= window}
+            if value in self._seen:
+                return False
+            self._seen[value] = now
+            return True
 
 
 @dataclass
@@ -59,8 +94,88 @@ class Session:
     scopes: list[str]
     authn_assertion_id: str
     expires_at: float
+    token_ids: list[str] = field(default_factory=list)
     last_seq: int = 0
     legacy: bool = False
+    flow: FlowState = field(default_factory=FlowState)
+    pending_approvals: dict[str, dict] = field(default_factory=dict)
+
+    @property
+    def approver(self) -> dict | None:
+        """The user who can approve calls for this session: the root of the chain."""
+        root = self.chain[0] if self.chain else None
+        return root if root and root.get("subjectType") == "user" else None
+
+
+@dataclass
+class Deployment:
+    gateway_id: str
+    key: object
+    server_id: str
+    registry: Registry
+    policy: PolicyEngine
+    audit: AuditLog
+    session_ttl: float = 900
+    clock_skew: float = 120
+    legacy: dict | None = None
+    server_artifact: Path | None = None
+    scan_descriptions: bool = False
+    scan_outputs: bool = False
+    enforce_input_schema: bool = False
+    approval_ttl: float = 300
+    nonces: NonceCache = field(default_factory=NonceCache)
+
+    @classmethod
+    def load(cls, path: Path) -> "Deployment":
+        path = Path(path)
+        base = path.parent
+        cfg = yaml.safe_load(path.read_text()) or {}
+        g = cfg.get("gateway") or {}
+
+        def rel(p: str) -> Path:
+            q = Path(p).expanduser()
+            return q if q.is_absolute() else base / q
+
+        key = load_key(rel(g["privateKey"]))
+        signer = cfg.get("configSigner")
+        verifier = FileVerifier(signer["id"], signer["publicKey"]) if signer else None
+        registry = Registry.load(rel(cfg["registry"]), verifier)
+        policy = PolicyEngine.load(rel(cfg["policy"]), verifier) if cfg.get("policy") else PolicyEngine()
+        gw = registry.entity(g.get("id"))
+        if gw is None or gw.public_key != public_b64(key):
+            raise ValueError("gateway.id must be registered with the public key that matches gateway.privateKey")
+        server = registry.entity(g.get("server"))
+        if server is None or server.kind != "tool":
+            raise ValueError("gateway.server must be a registered tool-type entity")
+        legacy = g.get("legacyClients", "deny")
+        ext = cfg.get("extensions") or {}
+        return cls(
+            gateway_id=gw.id,
+            key=key,
+            server_id=server.id,
+            registry=registry,
+            policy=policy,
+            audit=AuditLog(rel(cfg.get("audit", "smcp-audit.jsonl")), key, gw.id,
+                           checkpoint=rel(cfg["auditCheckpoint"]) if cfg.get("auditCheckpoint") else None,
+                           checkpoint_every=int(cfg.get("auditCheckpointEvery", 1)),
+                           fsync=bool(cfg.get("auditFsync", False))),
+            session_ttl=float(g.get("sessionTtlSeconds", 900)),
+            clock_skew=float(g.get("clockSkewSeconds", 120)),
+            legacy=legacy if isinstance(legacy, dict) else None,
+            server_artifact=rel(g["serverArtifact"]) if g.get("serverArtifact") else None,
+            scan_descriptions=bool(ext.get("scanDescriptions", False)),
+            scan_outputs=bool(ext.get("scanOutputs", False)),
+            enforce_input_schema=bool(ext.get("enforceInputSchema", False)),
+            approval_ttl=float(ext.get("approvalTtlSeconds", 300)),
+        )
+
+    def check_launch(self) -> str | None:
+        """None if the server may be started, else why not. Audited when refused."""
+        pinned = (self.registry.servers.get(self.server_id) or {}).get("artifactSha256")
+        problem = check_artifact(self.server_artifact, pinned)
+        if problem:
+            self.audit.append("SERVER_REJECTED", peerId=self.server_id, reason=problem)
+        return problem
 
 
 def _iso(ts: float) -> str:
@@ -90,77 +205,76 @@ def _take_smcp(msg: dict) -> dict:
     return taken
 
 
+def _clean_result_meta(result: dict) -> None:
+    if "_meta" in result:
+        cleaned = _strip_smcp(result.get("_meta"))
+        if cleaned:
+            result["_meta"] = cleaned
+        else:
+            result.pop("_meta")
+
+
 def _error(mid: object, code: int, message: str) -> dict:
     return {"jsonrpc": "2.0", "id": mid, "error": {"code": code, "message": message}}
+
+
+def _result_text(result: dict) -> str:
+    parts = [b.get("text", "") for b in result.get("content") or []
+             if isinstance(b, dict) and b.get("type") == "text"]
+    if "structuredContent" in result:
+        parts.append(json.dumps(result["structuredContent"]))
+    return "\n".join(parts)
 
 
 class Gateway:
     def __init__(
         self,
+        deployment: Deployment,
         *,
-        gateway_id: str,
-        key,
-        server_id: str,
-        registry: Registry,
-        policy: PolicyEngine,
-        audit: AuditLog,
-        session_ttl: float = 900,
-        clock_skew: float = 120,
-        legacy: dict | None = None,
         clock: Callable[[], float] = time.time,
         log: Callable[[str], None] | None = None,
     ) -> None:
-        self.gateway_id = gateway_id
-        self.key = key
-        self.server_id = server_id
-        self.registry = registry
-        self.policy = policy
-        self.audit = audit
-        self.session_ttl = session_ttl
-        self.clock_skew = clock_skew
-        self.legacy = legacy
+        self.d = deployment
         self.clock = clock
         self.log = log or (lambda m: print(f"smcp-gateway: {m}", file=sys.stderr, flush=True))
         self.session: Session | None = None
         self.vetted: dict[str, dict] = {}
         self.refused: str | None = None
         self._pending: dict[object, tuple[str, object]] = {}
-        self._nonces: dict[str, float] = {}
         self._lock = threading.Lock()
 
     @classmethod
     def from_config(cls, path: Path, **kwargs) -> "Gateway":
-        path = Path(path)
-        base = path.parent
-        cfg = yaml.safe_load(path.read_text()) or {}
-        g = cfg.get("gateway") or {}
+        return cls(Deployment.load(Path(path)), **kwargs)
 
-        def rel(p: str) -> Path:
-            q = Path(p).expanduser()
-            return q if q.is_absolute() else base / q
+    # shorthands used throughout
+    @property
+    def registry(self) -> Registry:
+        return self.d.registry
 
-        key = load_key(rel(g["privateKey"]))
-        registry = Registry.load(rel(cfg["registry"]))
-        policy = PolicyEngine.load(rel(cfg["policy"])) if cfg.get("policy") else PolicyEngine()
-        gw = registry.entity(g.get("id"))
-        if gw is None or gw.public_key != public_b64(key):
-            raise ValueError("gateway.id must be registered with the public key that matches gateway.privateKey")
-        server = registry.entity(g.get("server"))
-        if server is None or server.kind != "tool":
-            raise ValueError("gateway.server must be a registered tool-type entity")
-        legacy = g.get("legacyClients", "deny")
-        return cls(
-            gateway_id=gw.id,
-            key=key,
-            server_id=server.id,
-            registry=registry,
-            policy=policy,
-            audit=AuditLog(rel(cfg.get("audit", "smcp-audit.jsonl")), key, gw.id),
-            session_ttl=float(g.get("sessionTtlSeconds", 900)),
-            clock_skew=float(g.get("clockSkewSeconds", 120)),
-            legacy=legacy if isinstance(legacy, dict) else None,
-            **kwargs,
-        )
+    @property
+    def policy(self) -> PolicyEngine:
+        return self.d.policy
+
+    @property
+    def audit(self) -> AuditLog:
+        return self.d.audit
+
+    @property
+    def server_id(self) -> str:
+        return self.d.server_id
+
+    def _sid(self) -> str | None:
+        return self.session.session_id if self.session else None
+
+    def _reload(self) -> None:
+        """Pick up registry and policy edits; audit any that were rejected."""
+        for watched in (self.registry, self.policy):
+            watched.reload_if_changed()
+            problem = watched.pop_rejection()
+            if problem:
+                self.audit.append("CONFIG_REJECTED", sessionId=self._sid(), reason=problem)
+                self.log(f"kept the last good config: {problem}")
 
     # --- entry points ----------------------------------------------------------
 
@@ -176,26 +290,39 @@ class Gateway:
                 self._pending[mid] = ("tools/list", bool(params.get("cursor")))
                 return [msg], []
             if method == "tools/call":
-                return self._on_call(msg, smcp.get(CALL))
+                return self._on_call(msg, smcp)
+            if isinstance(method, str) and method.startswith(SESSION_GATED) and mid is not None:
+                problem = self._session_problem()
+                if problem:
+                    self.audit.append("REQUEST_DENIED", method=method, peerId=self.server_id, reason=problem)
+                    return [], [_error(mid, -32001, f"SMCP denied {method}: {problem}")]
+                self._pending[mid] = (method, (msg.get("params") or {}))
             return [msg], []
 
-    def from_server(self, msg: dict) -> list[dict]:
-        """Handle one server message. Returns the messages for the client."""
+    def handle_server(self, msg: dict) -> tuple[list[dict], list[dict]]:
+        """Handle one server message. Returns (to_client, to_server)."""
         with self._lock:
             mid = msg.get("id")
-            if mid is None or "method" in msg:
-                return [msg]  # notifications and server-to-client requests pass through
-            pending = self._pending.pop(mid, None)
+            if "method" in msg:
+                if mid is None:
+                    return [msg], []  # notification
+                return self._on_server_request(msg)
+            pending = self._pending.pop(mid, None) if mid is not None else None
             if pending is None:
-                return [msg]
+                return [msg], []
             kind, state = pending
             if kind == "initialize":
-                return [self._finish_initialize(msg, state)]
+                return [self._finish_initialize(msg, state)], []
             if kind == "tools/list":
-                return [self._filter_tools(msg, state)]
+                return [self._filter_tools(msg, state)], []
             if kind == "tools/call":
-                return [self._finish_call(msg, state)]
-            return [msg]
+                return [self._finish_call(msg, state)], []
+            return [self._finish_content(msg, kind, state)], []
+
+    def from_server(self, msg: dict) -> list[dict]:
+        """Handle one server message. Returns the messages for the client (the
+        in-process API; transports use :meth:`handle_server`)."""
+        return self.handle_server(msg)[0]
 
     # --- handshake ---------------------------------------------------------------
 
@@ -210,6 +337,15 @@ class Gateway:
                 self.audit.append("AUTHN_FAILED", agentId=agent, peerId=self.server_id, reason=str(e))
                 self.log(f"authentication failed: {e}")
                 return [], [_error(mid, -32001, f"SMCP authentication failed: {e}")]
+        # Hide client capabilities the server may not use, so a well-behaved
+        # server never asks for sampling or elicitation it would be refused.
+        params = msg.get("params")
+        caps = params.get("capabilities") if isinstance(params, dict) else None
+        if isinstance(caps, dict):
+            allowed = self.registry.server_requests(self.server_id)
+            for method, cap in SERVER_REQUEST_CAPABILITY.items():
+                if method not in allowed:
+                    caps.pop(cap, None)
         self._pending[mid] = ("initialize", state)
         return [msg], []
 
@@ -219,6 +355,7 @@ class Gateway:
         body = {k: v for k, v in hello.items() if k != "signature"}
         if body.get("version") != VERSION:
             raise AuthError(f"unsupported SMCP version {body.get('version')!r}")
+        self._reload()
         agent = self.registry.active(body.get("agentId"))
         if agent is None:
             raise AuthError(f"{self.registry.label(body.get('agentId'))} is not an active registered identity")
@@ -228,30 +365,25 @@ class Gateway:
             raise AuthError(f"the hello signature does not verify against the registered key of {agent.label}")
         now = self.clock()
         ts = body.get("timestamp")
-        if not isinstance(ts, (int, float)) or abs(now - ts) > self.clock_skew:
+        if not isinstance(ts, (int, float)) or abs(now - ts) > self.d.clock_skew:
             raise AuthError("the hello timestamp is outside the allowed clock skew")
         n = body.get("nonce")
-        self._nonces = {k: t for k, t in self._nonces.items() if now - t <= 2 * self.clock_skew}
-        if not isinstance(n, str) or n in self._nonces:
+        if not isinstance(n, str) or not self.d.nonces.add(n, now, 2 * self.d.clock_skew):
             raise AuthError("the hello nonce is missing or was already used")
-        self._nonces[n] = now
         try:
             if len(b64d(body.get("ephemeralKey") or "")) != 32:
                 raise ValueError
         except ValueError:
             raise AuthError("the hello carries no valid X25519 ephemeral key") from None
-        chain, scopes = verify_chain(body.get("delegation") or [], agent, self.registry,
-                                     now=now, skew=self.clock_skew)
-        return agent, chain, scopes
+        tokens = body.get("delegation") or []
+        chain, scopes = verify_chain(tokens, agent, self.registry, now=now, skew=self.d.clock_skew)
+        return agent, chain, scopes, [token_id(t) for t in tokens]
 
     def _finish_initialize(self, msg: dict, state) -> dict:
         result = msg.get("result")
         if not isinstance(result, dict):
             return msg
-        if isinstance(result.get("_meta"), dict):
-            result["_meta"] = _strip_smcp(result["_meta"]) or None
-            if result["_meta"] is None:
-                result.pop("_meta")
+        _clean_result_meta(result)
         now = self.clock()
 
         pinned = (self.registry.servers.get(self.server_id) or {}).get("serverVersion")
@@ -263,30 +395,30 @@ class Gateway:
             return _error(msg.get("id"), -32002, f"SMCP refused the server: {self.refused}")
 
         if state is None:
-            bind = (self.legacy or {}).get("bindAgent")
+            bind = (self.d.legacy or {}).get("bindAgent")
             agent = self.registry.active(bind) if bind else None
             if agent is not None:
                 self.session = Session(
                     session_id=new_session_id(), key=None, agent_id=agent.id,
-                    assurance=self.legacy.get("assurance", "aal1"), chain=[link(agent)],
-                    scopes=list(self.legacy.get("scopes") or []), authn_assertion_id=new_ref("AA"),
-                    expires_at=now + self.session_ttl, legacy=True)
+                    assurance=self.d.legacy.get("assurance", "aal1"), chain=[link(agent)],
+                    scopes=list(self.d.legacy.get("scopes") or []), authn_assertion_id=new_ref("AA"),
+                    expires_at=now + self.d.session_ttl, legacy=True)
                 self.audit.append("SESSION_ESTABLISHED", mode="legacy-bind", sessionId=self.session.session_id,
                                   agentId=agent.id, assurance=self.session.assurance, peerId=self.server_id)
             return msg
 
-        hello, agent, chain, scopes = state
+        hello, agent, chain, scopes, token_ids = state
         eph, eph_pub = ephemeral()
         body = {
             "version": VERSION,
-            "gatewayId": self.gateway_id,
+            "gatewayId": self.d.gateway_id,
             "peerId": self.server_id,
             "sessionId": new_session_id(),
             "authnAssertionId": new_ref("AA"),
             "assurance": agent.assurance,
             "delegatorChain": chain,
             "scopes": scopes,
-            "expiresAt": now + self.session_ttl,
+            "expiresAt": now + self.d.session_ttl,
             "nonce": nonce(),
             "ephemeralKey": eph_pub,
             "helloDigest": digest(hello),
@@ -295,13 +427,27 @@ class Gateway:
             session_id=body["sessionId"],
             key=session_key(eph, hello["ephemeralKey"], transcript(hello, body)),
             agent_id=agent.id, assurance=agent.assurance, chain=chain, scopes=scopes,
-            authn_assertion_id=body["authnAssertionId"], expires_at=body["expiresAt"])
-        result.setdefault("_meta", {})[SERVER_HELLO] = {**body, "signature": sign(self.key, body)}
+            authn_assertion_id=body["authnAssertionId"], expires_at=body["expiresAt"],
+            token_ids=token_ids)
+        result.setdefault("_meta", {})[SERVER_HELLO] = {**body, "signature": sign(self.d.key, body)}
         self.audit.append("SESSION_ESTABLISHED", mode="smcp", sessionId=body["sessionId"],
                           authnAssertionId=body["authnAssertionId"], agentId=agent.id,
                           assurance=agent.assurance, delegatorChain=_chain_summary(chain),
                           scopes=scopes, peerId=self.server_id)
         return msg
+
+    # --- server-to-client requests ------------------------------------------------------
+
+    def _on_server_request(self, msg: dict) -> tuple[list[dict], list[dict]]:
+        method = msg.get("method")
+        if method in self.registry.server_requests(self.server_id):
+            return [msg], []
+        reason = (f"the server sent a {method} request and the registry does not allow it for this server "
+                  f"(allowServerRequests)")
+        self.audit.append("SERVER_REQUEST_DENIED", sessionId=self._sid(), peerId=self.server_id,
+                          method=method, reason=reason)
+        self.log(f"blocked server request {method!r}")
+        return [], [_error(msg.get("id"), -32001, f"SMCP gateway: {reason}")]
 
     # --- tool listing ---------------------------------------------------------------
 
@@ -311,12 +457,12 @@ class Gateway:
         result = msg.get("result")
         if not isinstance(result, dict):
             return msg
-        self.registry.reload_if_changed()
+        self._reload()
         kept, vetted = [], {}
         for tool in result.get("tools") or []:
-            record, reason = self.registry.vet(self.server_id, tool)
+            record, reason = self.registry.vet(self.server_id, tool, scan=self.d.scan_descriptions)
             if record is None:
-                self.audit.append("TOOL_REJECTED", sessionId=self.session.session_id if self.session else None,
+                self.audit.append("TOOL_REJECTED", sessionId=self._sid(),
                                   peerId=self.server_id, toolName=tool.get("name"), reason=reason,
                                   definitionSha256=definition_hash(tool))
                 self.log(f"hid tool {tool.get('name')!r}: {reason}")
@@ -336,42 +482,73 @@ class Gateway:
 
     # --- tool calls -----------------------------------------------------------------
 
-    def _on_call(self, msg: dict, envelope: object) -> tuple[list[dict], list[dict]]:
+    def _on_call(self, msg: dict, smcp: dict) -> tuple[list[dict], list[dict]]:
         mid = msg.get("id")
         params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
         name = params.get("name")
         args = params.get("arguments")
         args = {} if args is None else args
+        approval = smcp.get(APPROVAL)
+        now = self.clock()
 
-        self.registry.reload_if_changed()
-        self.policy.reload_if_changed()
-        ctx, problem = self._authenticate_call(envelope, name, args, self.clock())
+        self._reload()
+        ctx, problem = self._authenticate_call(smcp.get(CALL), name, args, approval, now)
         record: ToolRecord | None = None
         if problem is None and not isinstance(args, dict):
             problem = "tools/call arguments must be an object"
+        request = None
         if problem is None:
+            s = self.session
             listed = self.vetted.get(name)
-            if listed is not None:
-                record, _ = self.registry.vet(self.server_id, listed)  # re-vet against today's registry
-            decision = self.policy.evaluate(ctx, record)
+            if listed is not None:  # re-vet against today's registry
+                record, _ = self.registry.vet(self.server_id, listed, scan=self.d.scan_descriptions)
+            assessed, signals = self.policy.assess_risk(s.flow)
+            declared = ctx["riskLevel"]
+            ctx.update(declaredRiskLevel=declared, assessedRiskLevel=assessed, riskSignals=signals or None,
+                       sessionLabels=s.flow.labels,
+                       riskLevel=declared if rank(RISK, declared) >= rank(RISK, assessed) else assessed)
+            schema = (listed or {}).get("inputSchema") if self.d.enforce_input_schema else None
+            decision = self.policy.evaluate(ctx, record, args=args, input_schema=schema, flow=s.flow)
+            if decision.permitted and decision.approval:
+                decision, request = self._check_approval(ctx, name, args, decision, approval, now)
         else:
             decision = Decision("DENY", [problem], policy_refs=["SMCP.AUTHN"])
         if not decision.permitted:
             self.log(f"denied {name!r}: {'; '.join(decision.reasons)}")
-            return [], [self._deny(mid, name, ctx, record, decision, args if isinstance(args, dict) else {})]
+            return [], [self._deny(mid, name, ctx, record, decision, args if isinstance(args, dict) else {},
+                                   request)]
+        if self.d.scan_outputs:
+            decision.obligations = [*decision.obligations, {"stripInstructions": True}]
+            if decision.effect == "PERMIT":
+                decision.effect = "PERMIT_WITH_OBLIGATIONS"
         self._pending[mid] = ("tools/call", (ctx, decision, record, args, name))
         return [msg], []
 
-    def _authenticate_call(self, envelope: object, name: object, args: object, now: float):
+    def _session_problem(self) -> str | None:
         s = self.session
         if self.refused:
-            return {"peerId": self.server_id, "toolCallId": new_ref("TC")}, self.refused
+            return self.refused
         if s is None and any(kind == "initialize" for kind, _ in self._pending.values()):
-            return ({"peerId": self.server_id, "toolCallId": new_ref("TC")},
-                    "the call arrived before the initialize handshake finished")
+            return "the call arrived before the initialize handshake finished"
         if s is None:
-            return ({"peerId": self.server_id, "toolCallId": new_ref("TC")},
-                    "no authenticated SMCP session on this connection (the client sent no smcp/hello)")
+            return "no authenticated SMCP session on this connection (the client sent no smcp/hello)"
+        if self.clock() > s.expires_at:
+            return "the SMCP session has expired; open a new session"
+        if self.registry.active(s.agent_id) is None:
+            return f"agent {self.registry.label(s.agent_id)} is revoked or suspended in the registry"
+        for entry in s.chain:
+            if self.registry.active(entry["subjectId"]) is None:
+                return (f"{entry.get('alias') or entry['subjectId']} in the delegation chain is "
+                        f"revoked or suspended in the registry")
+        revoked = [t for t in s.token_ids if t in self.registry.revoked_delegations]
+        if revoked:
+            return f"delegation {revoked[0]} behind this session is revoked"
+        return None
+
+    def _authenticate_call(self, envelope: object, name: object, args: object, approval: object, now: float):
+        s = self.session
+        if s is None or self.refused:
+            return {"peerId": self.server_id, "toolCallId": new_ref("TC")}, self._session_problem()
         ctx = {
             "sessionId": s.session_id,
             "callChainId": None,
@@ -386,14 +563,9 @@ class Gateway:
             "riskLevel": "low",
             "dataSensitivity": None,
         }
-        if now > s.expires_at:
-            return ctx, "the SMCP session has expired; open a new session"
-        if self.registry.active(s.agent_id) is None:
-            return ctx, f"agent {self.registry.label(s.agent_id)} is revoked or suspended in the registry"
-        for entry in s.chain:
-            if self.registry.active(entry["subjectId"]) is None:
-                return ctx, (f"{entry.get('alias') or entry['subjectId']} in the delegation chain is "
-                             f"revoked or suspended in the registry")
+        problem = self._session_problem()
+        if problem:
+            return ctx, problem
         if s.legacy:
             return ctx, None
         if not isinstance(envelope, dict):
@@ -403,13 +575,15 @@ class Gateway:
             return ctx, "the envelope is bound to a different session"
         if body.get("tool") != name or body.get("argsDigest") != digest(args):
             return ctx, "the envelope does not match this call's tool name or arguments"
+        if body.get("approvalDigest") != (digest(approval) if approval is not None else None):
+            return ctx, "the envelope does not match the approval sent with this call"
         if not mac_ok(s.key, body, envelope.get("mac")):
             return ctx, "the envelope MAC does not verify with this session's key"
         seq = body.get("seq")
         if not isinstance(seq, int) or isinstance(seq, bool) or seq <= s.last_seq:
             return ctx, f"replayed or out-of-order call (seq {seq!r}, last accepted {s.last_seq})"
         ts = body.get("timestamp")
-        if not isinstance(ts, (int, float)) or abs(now - ts) > self.clock_skew:
+        if not isinstance(ts, (int, float)) or abs(now - ts) > self.d.clock_skew:
             return ctx, "the envelope timestamp is outside the allowed clock skew"
         risk = body.get("riskLevel") or "low"
         if risk not in RISK:
@@ -424,14 +598,43 @@ class Gateway:
         )
         return ctx, None
 
-    def _deny(self, mid, name, ctx, record, decision: Decision, args: dict) -> dict:
+    def _check_approval(self, ctx, name, args, decision: Decision, approval, now):
+        """Turn a decision that needs approval into a permit (valid approval) or a
+        denial that carries an approval request."""
+        s = self.session
+        approver = s.approver
+        refs = [*decision.policy_refs]
+        if approver is None:
+            return Decision("DENY", ["this call needs a user's approval and the session has no user at the "
+                                     "root of its delegation chain: " + "; ".join(decision.approval)],
+                            policy_refs=refs), None
+        if approval is not None:
+            req, problem = _approval.check(approval, s.pending_approvals, self.registry,
+                                           session_id=s.session_id, tool=name, args_digest=digest(args), now=now)
+            if problem is None:
+                ctx["approvalRef"] = {"requestId": req["requestId"], "approverId": approver["subjectId"]}
+                decision.policy_refs = [*refs, "SMCP.EXT.approved"]
+                return decision, None
+            return Decision("DENY", [f"approval rejected: {problem}"], policy_refs=refs,
+                            requires_step_up=True), None
+        s.pending_approvals = {k: v for k, v in s.pending_approvals.items() if v["expiresAt"] >= now}
+        request = _approval.approval_request(session_id=s.session_id, tool=name, args=args,
+                                             approver_id=approver["subjectId"], reasons=decision.approval,
+                                             ttl=self.d.approval_ttl, now=now)
+        s.pending_approvals[request["requestId"]] = request
+        who = approver.get("alias") or approver["subjectId"]
+        return Decision("DENY", [f"needs approval from {who}: " + "; ".join(decision.approval)],
+                        policy_refs=refs, requires_step_up=True), request
+
+    def _deny(self, mid, name, ctx, record, decision: Decision, args: dict, request: dict | None = None) -> dict:
         result = {
             "content": [{"type": "text", "text": "SMCP denied this call: " + "; ".join(decision.reasons)}],
             "isError": True,
         }
-        ref = self._audit_call(ctx, name, record, decision, "DENIED", args, result)
+        ref = self._audit_call(ctx, name, record, decision, "DENIED", args, result,
+                               approval_request=request["requestId"] if request else None)
         result["_meta"] = {RESPONSE: self._sign_response(ctx, record, decision, NO_OBLIGATIONS,
-                                                         "DENIED", ref, result)}
+                                                         "DENIED", ref, result, request)}
         return {"jsonrpc": "2.0", "id": mid, "result": result}
 
     def _finish_call(self, msg: dict, state) -> dict:
@@ -440,21 +643,59 @@ class Gateway:
         if not isinstance(result, dict):
             self._audit_call(ctx, name, record, decision, "UPSTREAM_ERROR", args, None)
             return msg
-        if "_meta" in result:
-            cleaned = _strip_smcp(result.get("_meta"))
-            if cleaned:
-                result["_meta"] = cleaned
-            else:
-                result.pop("_meta")
+        _clean_result_meta(result)
         clean, applied = obl.apply(result, decision.obligations)
         action = "TOOL_ERROR" if clean.get("isError") else "SUCCESS"
+        if action == "SUCCESS" and self.session is not None:
+            self._label(name, record, ctx, clean, applied)
         ref = self._audit_call(ctx, name, record, decision, action, args, clean, applied)
         signed = self._sign_response(ctx, record, decision, applied, action, ref, clean)
         clean["_meta"] = {**(clean.get("_meta") or {}), RESPONSE: signed}
         msg["result"] = clean
         return msg
 
-    def _audit_call(self, ctx, name, record, decision, action, args, result, applied=None) -> str:
+    def _label(self, name: str, record: ToolRecord | None, ctx: dict, result: dict, applied: dict) -> None:
+        flow = self.session.flow
+        tcid = ctx.get("toolCallId")
+        produces = (record.security.get("flow") or {}).get("produces") or [] if record else []
+        for label in produces:
+            flow.add(label, name, tcid, _result_text(result) if label == "confidential" else "")
+        if applied.get("instructionsRemoved") and "untrusted" not in produces:
+            flow.add("untrusted", name, tcid, why="instruction-like content removed from the output")
+
+    # --- resources, prompts ---------------------------------------------------------
+
+    def _finish_content(self, msg: dict, method: str, params: dict) -> dict:
+        """Results of session-gated requests: audit them, and strip instructions
+        from resource and prompt text when output scanning is on."""
+        result = msg.get("result")
+        if not isinstance(result, dict):
+            return msg
+        _clean_result_meta(result)
+        removed: list[str] = []
+        if self.d.scan_outputs and method in ("resources/read", "prompts/get"):
+            for item in result.get("contents") or []:  # resources/read
+                if isinstance(item, dict) and isinstance(item.get("text"), str):
+                    item["text"], kinds = obl.strip_instructions(item["text"])
+                    removed += kinds
+            for m in result.get("messages") or []:  # prompts/get
+                content = m.get("content") if isinstance(m, dict) else None
+                if isinstance(content, dict) and isinstance(content.get("text"), str):
+                    content["text"], kinds = obl.strip_instructions(content["text"])
+                    removed += kinds
+        if removed and self.session is not None:
+            self.session.flow.add("untrusted", method, new_ref("RQ"),
+                                  why="instruction-like content removed from the output")
+        if method in ("resources/read", "prompts/get"):
+            self.audit.append("CONTENT_READ", sessionId=self._sid(), peerId=self.server_id, method=method,
+                              target=params.get("uri") or params.get("name"),
+                              resultDigest=digest(result), instructionsRemoved=sorted(set(removed)) or None)
+        return msg
+
+    # --- audit and signing ------------------------------------------------------------
+
+    def _audit_call(self, ctx, name, record, decision, action, args, result, applied=None,
+                    approval_request=None) -> str:
         chain = ctx.get("delegatorChain") or []
         user = next((c for c in chain if c.get("subjectType") == "user"), None)
         req = (record.security.get("auditRequirement") if record else None) or {}
@@ -475,6 +716,11 @@ class Gateway:
             requestedSensitivityLevel=ctx.get("dataSensitivity"),
             appliedSensitivityLevel=record.sensitivity if record else None,
             riskLevel=ctx.get("riskLevel"),
+            declaredRiskLevel=ctx.get("declaredRiskLevel"),
+            assessedRiskLevel=ctx.get("assessedRiskLevel"),
+            sessionLabels=ctx.get("sessionLabels") or None,
+            approval=ctx.get("approvalRef"),
+            approvalRequestId=approval_request,
             registryHash=self.registry.fingerprint,
             policyHash=self.policy.fingerprint,
         )
@@ -486,7 +732,7 @@ class Gateway:
                                        "isError": bool(result.get("isError"))}
         return self.audit.append("TOOL_CALL", **fields)
 
-    def _sign_response(self, ctx, record, decision, applied, action, ref, result) -> dict:
+    def _sign_response(self, ctx, record, decision, applied, action, ref, result, request=None) -> dict:
         body = {
             "type": "SMCP.ToolCallResponse",
             "toolCallId": ctx.get("toolCallId"),
@@ -498,6 +744,7 @@ class Gateway:
                 "obligations": decision.obligations,
                 "redactedFields": applied["redactedFields"],
                 "secretsRedacted": applied["secretsRedacted"],
+                "instructionsRemoved": applied["instructionsRemoved"],
                 "truncated": applied["truncated"],
                 "requiresStepUpForNext": decision.requires_step_up,
             },
@@ -505,11 +752,13 @@ class Gateway:
             "policyRefs": decision.policy_refs,
             "auditRef": ref,
             "resultDigest": digest(result_without_response(result)),
-            "signedBy": self.gateway_id,
+            "signedBy": self.d.gateway_id,
             "signedAt": _iso(self.clock()),
             "hashAlgo": "SHA-256",
         }
-        return {**body, "signature": sign(self.key, body)}
+        if request is not None:
+            body["approvalRequest"] = request
+        return {**body, "signature": sign(self.d.key, body)}
 
 
 def _chain_summary(chain: list[dict]) -> list[dict]:
@@ -518,6 +767,26 @@ def _chain_summary(chain: list[dict]) -> list[dict]:
 
 
 # --- stdio transport ---------------------------------------------------------------
+
+
+def _write_lines(stream: TextIO, msgs: list[dict], lock: threading.Lock) -> None:
+    with lock:
+        for m in msgs:
+            stream.write(json.dumps(m) + "\n")
+        stream.flush()
+
+
+def serve_refusal(reason: str, stdin: TextIO, stdout: TextIO) -> int:
+    """Answer every request with the reason the server was not started."""
+    for line in stdin:
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(msg, dict) and "id" in msg and "method" in msg:
+            stdout.write(json.dumps(_error(msg["id"], -32002, f"SMCP refused the server: {reason}")) + "\n")
+            stdout.flush()
+    return 3
 
 
 def serve_stdio(
@@ -530,21 +799,23 @@ def serve_stdio(
     """Run ``server_command`` as a subprocess and enforce SMCP on everything between."""
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
+    problem = gateway.d.check_launch()
+    if problem:
+        gateway.log(f"refusing to start the server: {problem}")
+        return serve_refusal(problem, stdin, stdout)
     proc = subprocess.Popen(server_command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             text=True, bufsize=1)
     assert proc.stdin and proc.stdout
-    out_lock = threading.Lock()
+    out_lock, up_lock = threading.Lock(), threading.Lock()
 
     def to_client(msgs: list[dict]) -> None:
-        with out_lock:
-            for m in msgs:
-                stdout.write(json.dumps(m) + "\n")
-            stdout.flush()
+        _write_lines(stdout, msgs, out_lock)
 
     def to_server(msgs: list[dict]) -> None:
-        for m in msgs:
-            proc.stdin.write(json.dumps(m) + "\n")
-        proc.stdin.flush()
+        try:
+            _write_lines(proc.stdin, msgs, up_lock)
+        except (BrokenPipeError, ValueError):
+            pass
 
     def pump() -> None:
         try:
@@ -584,9 +855,11 @@ def serve_stdio(
         except json.JSONDecodeError:
             continue
         try:
-            down = gateway.from_server(msg)
+            down, up = gateway.handle_server(msg)
         except Exception as e:
             gateway.log(f"internal error on server message: {e!r}")
-            down = [_error(msg.get("id"), -32603, f"SMCP gateway error: {e}")] if "id" in msg else []
+            down, up = ([_error(msg.get("id"), -32603, f"SMCP gateway error: {e}")]
+                        if "id" in msg and "method" not in msg else []), []
+        to_server(up)
         to_client(down)
     return proc.wait()

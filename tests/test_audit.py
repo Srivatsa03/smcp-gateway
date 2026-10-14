@@ -1,6 +1,8 @@
 import json
 
-from smcp_gateway.audit import AuditLog, verify_log
+import pytest
+
+from smcp_gateway.audit import AuditIntegrityError, AuditLog, verify_log
 from smcp_gateway.crypto import generate_key, public_b64
 
 
@@ -39,8 +41,57 @@ def test_wrong_signer_key_detected(tmp_path):
     assert not verify_log(path, {"G2TEST": public_b64(generate_key())}).ok
 
 
-def test_tail_truncation_is_a_known_gap(tmp_path):
+def test_tail_truncation_needs_a_checkpoint(tmp_path):
     path, keys, _ = make_log(tmp_path)
     lines = path.read_text().splitlines()
     path.write_text("\n".join(lines[:-1]) + "\n")
-    assert verify_log(path, keys).ok  # documented in docs/LIMITATIONS.md
+    assert verify_log(path, keys).ok  # the chain alone cannot see it
+
+
+def test_checkpoint_catches_truncation(tmp_path):
+    key = generate_key()
+    keys = {"G2TEST": public_b64(key)}
+    path, cp = tmp_path / "a.jsonl", tmp_path / "witness" / "a.cp.json"
+    log = AuditLog(path, key, "G2TEST", checkpoint=cp, fsync=True)
+    for i in range(3):
+        log.append("TOOL_CALL", toolName=f"t{i}")
+    older = json.loads(cp.read_text())
+    log.append("TOOL_CALL", toolName="t3")
+    checkpoint = json.loads(cp.read_text())
+    assert checkpoint["count"] == 4 and verify_log(path, keys, checkpoint).ok
+
+    lines = path.read_text().splitlines()
+    path.write_text("\n".join(lines[:-1]) + "\n")
+    r = verify_log(path, keys, checkpoint)
+    assert not r.ok and "truncated" in r.reason
+    assert verify_log(path, keys, older).ok  # rolled back together: why the checkpoint belongs off-host
+
+    with pytest.raises(AuditIntegrityError):  # the gateway will not write over the evidence
+        AuditLog(path, key, "G2TEST", checkpoint=cp)
+
+
+def test_checkpoint_signature_and_divergence(tmp_path):
+    key = generate_key()
+    keys = {"G2TEST": public_b64(key)}
+    path, cp = tmp_path / "a.jsonl", tmp_path / "a.cp.json"
+    log = AuditLog(path, key, "G2TEST", checkpoint=cp)
+    log.append("TOOL_CALL", toolName="t0")
+    log.append("TOOL_CALL", toolName="t1")
+    checkpoint = json.loads(cp.read_text())
+    forged = {**checkpoint, "count": 1}
+    assert "signature" in verify_log(path, keys, forged).reason
+
+    other = AuditLog(tmp_path / "b.jsonl", key, "G2TEST")  # a different log, same length, same key
+    other.append("TOOL_CALL", toolName="x0")
+    other.append("TOOL_CALL", toolName="x1")
+    path.write_text((tmp_path / "b.jsonl").read_text())
+    assert "differs from the checkpoint" in verify_log(path, keys, checkpoint).reason
+
+
+def test_checkpoint_interval(tmp_path):
+    key = generate_key()
+    cp = tmp_path / "a.cp.json"
+    log = AuditLog(tmp_path / "a.jsonl", key, "G2TEST", checkpoint=cp, checkpoint_every=3)
+    for i in range(5):
+        log.append("TOOL_CALL", toolName=f"t{i}")
+    assert json.loads(cp.read_text())["count"] == 3  # written at 3; 4 and 5 are not covered yet
