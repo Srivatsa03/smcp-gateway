@@ -22,10 +22,12 @@ Endpoint behaviour, one path (default ``/mcp``):
   server-initiated messages that arrive while no request is open.
 * ``DELETE`` ends the session and stops its server process.
 
-An ``Origin`` header must be on the allowlist (DNS rebinding protection), an
-unknown session id gets ``404`` so the client starts over, and sessions idle
-longer than the session TTL are closed. There is no TLS: bind to loopback, or
-put a TLS-terminating proxy in front.
+DNS rebinding protection: an ``Origin`` header must be on the allowlist, and on
+loopback the ``Host`` header must be a loopback name. An unknown session id
+gets ``404`` so the client starts over, and sessions idle longer than the
+session TTL are closed. Unless legacy binding is configured, an ``initialize``
+without an SMCP hello is refused before any server process starts. There is
+no TLS: bind to loopback, or put a TLS-terminating proxy in front.
 """
 
 from __future__ import annotations
@@ -41,59 +43,88 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .gateway import Deployment, Gateway, _error
+from .protocol import HELLO
 
 SSE_KEEPALIVE = 15.0
+MAX_BODY = 4 * 1024 * 1024
+PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26")
+LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1")
 
 
 def _key(mid: object) -> str:
     return json.dumps(mid, sort_keys=True)
 
 
+class LaunchRefused(Exception):
+    pass
+
+
 class HttpSession:
-    """One MCP session: a gateway, an upstream process, and the routing between them."""
+    """One MCP session: a gateway, an upstream process, and the routing between them.
+
+    The upstream process starts with the first message the gateway forwards, so
+    a client whose hello is refused never costs a process."""
 
     def __init__(self, sid: str, gateway: Gateway, command: list[str]) -> None:
         self.sid = sid
         self.gateway = gateway
-        self.proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
+        self.command = command
+        self.proc: subprocess.Popen | None = None
         self.waiters: dict[str, queue.Queue] = {}
         self.open_requests: list[queue.Queue] = []  # POSTs that can carry server-initiated messages
         self.stream: queue.Queue = queue.Queue(maxsize=1000)
         self.last_used = time.time()
         self.closed = False
-        self._up = threading.Lock()
+        self._up = threading.Lock()     # process start and writes to it
+        self._route = threading.Lock()  # waiters and open_requests
+
+    def _start(self) -> None:
+        problem = self.gateway.d.check_launch()
+        if problem:
+            raise LaunchRefused(problem)
+        self.proc = subprocess.Popen(self.command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                     text=True, bufsize=1)
         threading.Thread(target=self._read, daemon=True).start()
 
     def _read(self) -> None:
-        assert self.proc.stdout
-        for line in self.proc.stdout:
-            if not line.strip():
-                continue
-            try:
-                msg = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            try:
-                down, up = self.gateway.handle_server(msg)
-            except Exception as e:  # fail closed
-                self.gateway.log(f"internal error on server message: {e!r}")
-                down = [_error(msg.get("id"), -32603, f"SMCP gateway error: {e}")] if "id" in msg else []
-                up = []
-            self.send_up(up)
-            for m in down:
-                self._dispatch(m)
-        self.closed = True
-        for q in list(self.waiters.values()):
+        assert self.proc and self.proc.stdout
+        try:
+            for line in self.proc.stdout:
+                if not line.strip():
+                    continue
+                try:
+                    msg = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                try:
+                    down, up = self.gateway.handle_server(msg)
+                except Exception as e:  # fail closed
+                    self.gateway.log(f"internal error on server message: {e!r}")
+                    down = [_error(msg.get("id"), -32603, f"SMCP gateway error: {e}")] if "id" in msg else []
+                    up = []
+                self.send_up(up)
+                for m in down:
+                    self._dispatch(m)
+        finally:
+            self.closed = True
+            self._wake_all()
+
+    def _wake_all(self) -> None:
+        with self._route:
+            waiting = list(self.waiters.values())
+        for q in waiting:
             q.put(None)
 
     def _dispatch(self, m: dict) -> None:
-        if "method" not in m and "id" in m:
-            q = self.waiters.pop(_key(m["id"]), None)
-            if q is not None:
-                q.put(("response", m))
-                return
-        if self.open_requests:  # most likely related to the request in flight
-            self.open_requests[-1].put(("event", m))
+        with self._route:
+            target = None
+            if "method" not in m and "id" in m:
+                target = self.waiters.pop(_key(m["id"]), None)
+                item = ("response", m)
+            if target is None and self.open_requests:  # most likely related to the request in flight
+                target, item = self.open_requests[-1], ("event", m)
+        if target is not None:
+            target.put(item)
             return
         try:
             self.stream.put_nowait(m)  # for the GET stream; dropped if nobody reads it
@@ -104,6 +135,10 @@ class HttpSession:
         if not msgs:
             return
         with self._up:
+            if self.closed:
+                return
+            if self.proc is None:
+                self._start()
             try:
                 assert self.proc.stdin
                 for m in msgs:
@@ -121,9 +156,10 @@ class HttpSession:
         self.last_used = time.time()
         key = _key(msg.get("id"))
         q: queue.Queue = queue.Queue()
-        self.waiters[key] = q
-        if on_event is not None:
-            self.open_requests.append(q)
+        with self._route:
+            self.waiters[key] = q
+            if on_event is not None:
+                self.open_requests.append(q)
         try:
             try:
                 up, down = self.gateway.from_client(msg)
@@ -132,7 +168,11 @@ class HttpSession:
                 return _error(msg.get("id"), -32603, f"SMCP gateway error: {e}")
             if down:
                 return down[0]
-            self.send_up(up)
+            try:
+                self.send_up(up)
+            except LaunchRefused as e:
+                self.closed = True
+                return _error(msg.get("id"), -32002, f"SMCP refused the server: {e}")
             deadline = time.monotonic() + timeout
             while True:
                 try:
@@ -148,43 +188,49 @@ class HttpSession:
                 on_event(m)
                 deadline = time.monotonic() + timeout  # the server is still working on it
         finally:
-            self.waiters.pop(key, None)
-            if on_event is not None and q in self.open_requests:
-                self.open_requests.remove(q)
+            with self._route:
+                self.waiters.pop(key, None)
+                if q in self.open_requests:
+                    self.open_requests.remove(q)
 
     def deliver(self, msg: dict) -> None:
         """A client notification or response: no reply expected."""
         self.last_used = time.time()
         try:
             up, _ = self.gateway.from_client(msg)
+            self.send_up(up)
+        except LaunchRefused:
+            self.closed = True
         except Exception as e:
             self.gateway.log(f"internal error on client message: {e!r}")
-            return
-        self.send_up(up)
 
     def close(self) -> None:
         self.closed = True
-        try:
-            if self.proc.stdin:
-                self.proc.stdin.close()
-            self.proc.wait(timeout=3)
-        except (OSError, subprocess.TimeoutExpired):
-            self.proc.kill()
-        for q in list(self.waiters.values()):
-            q.put(None)
+        with self._up:
+            proc = self.proc
+        if proc is not None:
+            try:
+                if proc.stdin:
+                    proc.stdin.close()
+                proc.wait(timeout=3)
+            except (OSError, subprocess.TimeoutExpired):
+                proc.kill()
+        self._wake_all()
 
 
 class HttpGateway(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, address: tuple[str, int], deployment: Deployment, command: list[str], *,
-                 endpoint: str = "/mcp", allowed_origins: tuple[str, ...] = (), max_sessions: int = 64,
-                 request_timeout: float = 60.0, verbose: bool = False) -> None:
+                 endpoint: str = "/mcp", allowed_origins: tuple[str, ...] = (), allowed_hosts: tuple[str, ...] = (),
+                 max_sessions: int = 64, request_timeout: float = 60.0, verbose: bool = False) -> None:
         super().__init__(address, _Handler)
         self.deployment = deployment
         self.command = command
         self.endpoint = endpoint
         self.allowed_origins = set(allowed_origins)
+        # Host header check (DNS rebinding): on loopback, only loopback names
+        self.allowed_hosts = set(allowed_hosts) or (set(LOOPBACK_HOSTS) if address[0] in LOOPBACK_HOSTS else set())
         self.max_sessions = max_sessions
         self.request_timeout = request_timeout
         self.verbose = verbose
@@ -201,15 +247,12 @@ class HttpGateway(ThreadingHTTPServer):
         print(f"smcp-gateway: {message}", file=sys.stderr, flush=True)
 
     def open_session(self) -> tuple[HttpSession | None, str | None]:
+        """Reserve a session slot. No process starts until the hello is accepted."""
         with self._lock:
             if len(self.sessions) >= self.max_sessions:
                 return None, "too many open sessions"
-        problem = self.deployment.check_launch()
-        if problem:
-            return None, f"SMCP refused the server: {problem}"
-        sid = secrets.token_urlsafe(24)
-        session = HttpSession(sid, Gateway(self.deployment, log=self.log), self.command)
-        with self._lock:
+            sid = secrets.token_urlsafe(24)
+            session = HttpSession(sid, Gateway(self.deployment, log=self.log), self.command)
             self.sessions[sid] = session
         return session, None
 
@@ -221,16 +264,20 @@ class HttpGateway(ThreadingHTTPServer):
         session.close()
         return True
 
+    def _snapshot(self) -> list[tuple[str, HttpSession]]:
+        with self._lock:
+            return list(self.sessions.items())
+
     def _reap(self) -> None:
         while True:
             time.sleep(5)
             cutoff = time.time() - self.deployment.session_ttl
-            for sid, s in list(self.sessions.items()):
+            for sid, s in self._snapshot():
                 if s.closed or s.last_used < cutoff:
                     self.drop(sid)
 
     def server_close(self) -> None:
-        for sid in list(self.sessions):
+        for sid, _ in self._snapshot():
             self.drop(sid)
         super().server_close()
 
@@ -261,13 +308,22 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(status, _error(None, -32600, message))
 
     def _gate(self) -> bool:
-        """Path and Origin checks shared by every method."""
+        """Path, Host, Origin and protocol version checks shared by every method."""
         if self.path.split("?", 1)[0] != self.server.endpoint:
             self._reject(HTTPStatus.NOT_FOUND, f"the MCP endpoint is {self.server.endpoint}")
+            return False
+        host = (self.headers.get("Host") or "").strip()
+        name = host[1:host.index("]")] if host.startswith("[") and "]" in host else host.rsplit(":", 1)[0]
+        if self.server.allowed_hosts and name.lower() not in self.server.allowed_hosts:
+            self._reject(HTTPStatus.FORBIDDEN, f"host {host or '(none)'} is not allowed")
             return False
         origin = self.headers.get("Origin")
         if origin is not None and origin not in self.server.allowed_origins:
             self._reject(HTTPStatus.FORBIDDEN, f"origin {origin} is not allowed")
+            return False
+        version = self.headers.get("MCP-Protocol-Version")
+        if version is not None and version not in PROTOCOL_VERSIONS:
+            self._reject(HTTPStatus.BAD_REQUEST, f"unsupported MCP-Protocol-Version {version}")
             return False
         return True
 
@@ -288,7 +344,15 @@ class _Handler(BaseHTTPRequestHandler):
         if not self._gate():
             return
         try:
-            length = int(self.headers.get("Content-Length") or 0)
+            length = int(self.headers.get("Content-Length") or "")
+        except ValueError:
+            self._reject(HTTPStatus.LENGTH_REQUIRED, "send a Content-Length")
+            return
+        if not 0 < length <= MAX_BODY:
+            self._reject(HTTPStatus.REQUEST_ENTITY_TOO_LARGE if length > 0 else HTTPStatus.BAD_REQUEST,
+                         f"the body must be 1 to {MAX_BODY} bytes")
+            return
+        try:
             msg = json.loads(self.rfile.read(length))
         except (ValueError, json.JSONDecodeError):
             self._send(HTTPStatus.BAD_REQUEST, _error(None, -32700, "parse error"))
@@ -297,6 +361,13 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.BAD_REQUEST, _error(None, -32600, "send one JSON-RPC message per POST"))
             return
         if msg.get("method") == "initialize":
+            meta = (msg.get("params") or {}).get("_meta") if isinstance(msg.get("params"), dict) else None
+            if self.server.deployment.legacy is None and not (isinstance(meta, dict) and HELLO in meta):
+                # Without legacy binding such a session could do nothing, so do not
+                # spend a server process on it.
+                self._send(HTTPStatus.OK, _error(msg.get("id"), -32001, "SMCP gateway: this gateway accepts only "
+                                                 "SMCP clients (initialize carried no smcp/hello)"))
+                return
             session, problem = self.server.open_session()
             if session is None:
                 self._send(HTTPStatus.SERVICE_UNAVAILABLE, _error(msg.get("id"), -32002, problem))
@@ -384,9 +455,10 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def serve_http(deployment: Deployment, command: list[str], *, host: str = "127.0.0.1", port: int = 8765,
-               allowed_origins: tuple[str, ...] = (), max_sessions: int = 64, verbose: bool = False) -> int:
+               allowed_origins: tuple[str, ...] = (), allowed_hosts: tuple[str, ...] = (), max_sessions: int = 64,
+               verbose: bool = False) -> int:
     httpd = HttpGateway((host, port), deployment, command, allowed_origins=allowed_origins,
-                        max_sessions=max_sessions, verbose=verbose)
+                        allowed_hosts=allowed_hosts, max_sessions=max_sessions, verbose=verbose)
     if host not in ("127.0.0.1", "localhost", "::1"):
         httpd.log(f"listening on {host}: there is no TLS here, put a TLS proxy in front")
     httpd.log(f"serving MCP over HTTP at {httpd.url}")

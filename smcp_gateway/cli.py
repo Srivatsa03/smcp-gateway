@@ -55,7 +55,8 @@ def cmd_serve(args, server_cmd: list[str]) -> int:
     if deployment is None:
         return 2
     return serve_http(deployment, server_cmd, host=args.host, port=args.port,
-                      allowed_origins=tuple(args.allow_origin or ()), max_sessions=args.max_sessions,
+                      allowed_origins=tuple(args.allow_origin or ()), allowed_hosts=tuple(args.allow_host or ()),
+                      max_sessions=args.max_sessions,
                       verbose=args.verbose)
 
 
@@ -151,7 +152,7 @@ def cmd_scan(args, server_cmd: list[str]) -> int:
 def cmd_sign_config(args, _) -> int:
     key = load_key(Path(args.key))
     for f in args.files:
-        out = sign_file(Path(f), key, args.signer)
+        out = sign_file(Path(f), key, args.signer, args.serial)
         print(f"signed {f} -> {out}")
     print(f"configSigner: {{id: {args.signer}, publicKey: {public_b64(key)}}}")
     return 0
@@ -166,7 +167,12 @@ def cmd_audit_verify(args, _) -> int:
     try:
         registry = Registry.load(Path(args.registry))
         checkpoint = json.loads(Path(args.checkpoint).read_text()) if args.checkpoint else None
-        keys = {e.id: e.public_key for e in registry.entities.values() if e.public_key}
+        keys = registry.gateway_keys()
+        if args.signer:
+            keys = {k: v for k, v in keys.items() if k == args.signer}
+            if not keys:
+                print(f"smcp-gateway audit verify: {args.signer} is not a registered gateway", file=sys.stderr)
+                return 2
         result = verify_log(Path(args.path), keys, checkpoint)
     except (OSError, ValueError) as e:
         print(f"smcp-gateway audit verify: {e}", file=sys.stderr)
@@ -227,6 +233,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--allow-origin", action="append", help="an Origin header value to accept (repeatable)")
+    p.add_argument("--allow-host", action="append",
+                   help="a Host header name to accept (repeatable; default on loopback: loopback names)")
     p.add_argument("--max-sessions", type=int, default=64)
     p.add_argument("--verbose", action="store_true")
     p.set_defaults(func=cmd_serve)
@@ -268,6 +276,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("sign-config", help="sign registry or policy files for configSigner")
     p.add_argument("--key", required=True, help="the governance private key")
     p.add_argument("--signer", required=True, help="the signer's identity code")
+    p.add_argument("--serial", type=int, help="the version number to sign (default: one more than the current "
+                                              ".sig); the gateway refuses a lower serial than it has loaded")
     p.add_argument("files", nargs="+")
     p.set_defaults(func=cmd_sign_config)
 
@@ -281,6 +291,7 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("path")
     q.add_argument("--registry", required=True)
     q.add_argument("--checkpoint", help="a signed checkpoint; also detects a truncated log")
+    q.add_argument("--signer", help="accept only this gateway's signatures (default: any registered gateway)")
     q.set_defaults(func=cmd_audit_verify)
     q = asub.add_parser("checkpoint", help="print a signed checkpoint of the log's current head")
     q.add_argument("-c", "--config", required=True)

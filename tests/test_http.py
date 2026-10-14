@@ -87,11 +87,57 @@ def test_protocol_errors(world, served):
     assert raw(srv.url, method="DELETE", headers={"Mcp-Session-Id": "nope"})[0] == 404
 
 
-def test_smcp_unaware_client_is_denied(world, served):
+def test_smcp_unaware_client(world, served):
     srv, cfg = served("t-http4")
-    with MCPClient(url=srv.url) as plain:
-        text = plain.call("echo", {"text": "hi"})["result"]["content"][0]["text"]
-    assert "no authenticated SMCP session" in text
+    with pytest.raises(ProtocolError, match="accepts only SMCP clients"):
+        MCPClient(url=srv.url).start()  # refused before any server process starts
+    assert not srv.sessions
+
+    cfg = world.write("t-http4b", legacy={"bindAgent": world.report.id, "assurance": "aal1"})
+    legacy = HttpGateway(("127.0.0.1", 0), Deployment.load(cfg), world.server_cmd(cfg))
+    threading.Thread(target=legacy.serve_forever, daemon=True).start()
+    try:
+        with MCPClient(url=legacy.url) as plain:
+            plain.list_tools()
+            assert plain.call("echo", {"text": "hi"})["result"]["content"][0]["text"] == "hi"
+            denied = plain.call("query_sales", {"region": "NA"})["result"]["content"][0]["text"]
+        assert "assurance aal1" in denied
+    finally:
+        legacy.shutdown()
+        legacy.server_close()
+
+
+def test_session_cap_is_atomic(world, served):
+    srv, cfg = served("t-http7", max_sessions=3)
+    from smcp_gateway.protocol import HELLO, make_hello
+    tok = world.delegate(world.alice, world.report, [])
+    results = []
+
+    def init():
+        hello, _ = make_hello(world.report.id, world.report.key, [tok])
+        results.append(raw(srv.url, body={"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                                          "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                                                     "_meta": {HELLO: hello}}})[0])
+    threads = [threading.Thread(target=init) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(results).count(200) == 3 and len(srv.sessions) == 3
+
+
+def test_header_checks(world, served):
+    srv, cfg = served("t-http8")
+    init = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    assert raw(srv.url, body=init, headers={"Host": "evil.test:8765"})[0] == 403  # DNS rebinding
+    assert raw(srv.url, body=init, headers={"MCP-Protocol-Version": "1999-01-01"})[0] == 400
+    req = urllib.request.Request(srv.url, data=b"", method="POST", headers={"Content-Length": "0"})
+    try:
+        urllib.request.urlopen(req, timeout=5)
+        status = 200
+    except urllib.error.HTTPError as e:
+        status = e.code
+    assert status == 400
 
 
 def test_server_request_streams_on_the_post(world, served):
