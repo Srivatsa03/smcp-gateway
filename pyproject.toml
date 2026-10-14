@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "smcp-gateway"
-version = "0.1.0"
+version = "0.2.0"
 description = "Reference gateway for the Secure Model Context Protocol (SMCP, arXiv:2602.01129), with an attack bench over the paper's 26 MCP risks."
 readme = "README.md"
 requires-python = ">=3.10"
