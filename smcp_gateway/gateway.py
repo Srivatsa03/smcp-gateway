@@ -123,6 +123,7 @@ class Deployment:
     scan_outputs: bool = False
     enforce_input_schema: bool = False
     approval_ttl: float = 300
+    verifier: FileVerifier | None = None
     nonces: NonceCache = field(default_factory=NonceCache)
 
     @classmethod
@@ -137,8 +138,15 @@ class Deployment:
             return q if q.is_absolute() else base / q
 
         key = load_key(rel(g["privateKey"]))
+        audit = AuditLog(rel(cfg.get("audit", "smcp-audit.jsonl")), key, str(g.get("id")),
+                         checkpoint=rel(cfg["auditCheckpoint"]) if cfg.get("auditCheckpoint") else None,
+                         checkpoint_every=int(cfg.get("auditCheckpointEvery", 1)),
+                         fsync=bool(cfg.get("auditFsync", False)))
         signer = cfg.get("configSigner")
         verifier = FileVerifier(signer["id"], signer["publicKey"]) if signer else None
+        if verifier is not None:  # serials loaded before this start: no rollback across restarts
+            for e in audit.entries("CONFIG_LOADED"):
+                verifier.seed(e["file"], e["serial"])
         registry = Registry.load(rel(cfg["registry"]), verifier)
         policy = PolicyEngine.load(rel(cfg["policy"]), verifier) if cfg.get("policy") else PolicyEngine()
         gw = registry.entity(g.get("id"))
@@ -149,16 +157,13 @@ class Deployment:
             raise ValueError("gateway.server must be a registered tool-type entity")
         legacy = g.get("legacyClients", "deny")
         ext = cfg.get("extensions") or {}
-        return cls(
+        deployment = cls(
             gateway_id=gw.id,
             key=key,
             server_id=server.id,
             registry=registry,
             policy=policy,
-            audit=AuditLog(rel(cfg.get("audit", "smcp-audit.jsonl")), key, gw.id,
-                           checkpoint=rel(cfg["auditCheckpoint"]) if cfg.get("auditCheckpoint") else None,
-                           checkpoint_every=int(cfg.get("auditCheckpointEvery", 1)),
-                           fsync=bool(cfg.get("auditFsync", False))),
+            audit=audit,
             session_ttl=float(g.get("sessionTtlSeconds", 900)),
             clock_skew=float(g.get("clockSkewSeconds", 120)),
             legacy=legacy if isinstance(legacy, dict) else None,
@@ -167,7 +172,19 @@ class Deployment:
             scan_outputs=bool(ext.get("scanOutputs", False)),
             enforce_input_schema=bool(ext.get("enforceInputSchema", False)),
             approval_ttl=float(ext.get("approvalTtlSeconds", 300)),
+            verifier=verifier,
         )
+        for watched in (registry, policy):
+            deployment.config_loaded(watched)
+        return deployment
+
+    def config_loaded(self, watched) -> None:
+        """Audit a signed registry or policy version that is now in force."""
+        if self.verifier is None or watched.path is None:
+            return
+        k = FileVerifier.key(watched.path)
+        self.audit.append("CONFIG_LOADED", file=k, serial=self.verifier.serials.get(k),
+                          fingerprint=watched.fingerprint)
 
     def check_launch(self) -> str | None:
         """None if the server may be started, else why not. Audited when refused."""
@@ -214,13 +231,21 @@ def _clean_result_meta(result: dict) -> None:
             result.pop("_meta")
 
 
+def _without_meta(params: dict) -> dict:
+    return {k: v for k, v in params.items() if k != "_meta"}
+
+
 def _error(mid: object, code: int, message: str) -> dict:
     return {"jsonrpc": "2.0", "id": mid, "error": {"code": code, "message": message}}
 
 
 def _result_text(result: dict) -> str:
-    parts = [b.get("text", "") for b in result.get("content") or []
-             if isinstance(b, dict) and b.get("type") == "text"]
+    parts = []
+    for b in result.get("content") or []:
+        if isinstance(b, dict) and b.get("type") == "text":
+            parts.append(str(b.get("text", "")))
+        elif isinstance(b, dict) and b.get("type") == "resource" and isinstance(b.get("resource"), dict):
+            parts.append(str(b["resource"].get("text", "")))
     if "structuredContent" in result:
         parts.append(json.dumps(result["structuredContent"]))
     return "\n".join(parts)
@@ -270,7 +295,8 @@ class Gateway:
     def _reload(self) -> None:
         """Pick up registry and policy edits; audit any that were rejected."""
         for watched in (self.registry, self.policy):
-            watched.reload_if_changed()
+            if watched.reload_if_changed():
+                self.d.config_loaded(watched)
             problem = watched.pop_rejection()
             if problem:
                 self.audit.append("CONFIG_REJECTED", sessionId=self._sid(), reason=problem)
@@ -283,6 +309,15 @@ class Gateway:
         with self._lock:
             smcp = _take_smcp(msg)
             method, mid = msg.get("method"), msg.get("id")
+            if method is None or "id" not in msg:
+                return [msg], []  # a notification, or the client's answer to a server request
+            # Every forwarded request is tracked by id, so each response is matched to
+            # the request it answers. A reused id would let a second response skip
+            # enforcement, so it is refused.
+            if not isinstance(mid, (str, int)) or isinstance(mid, bool):
+                return [], [_error(None, -32600, "SMCP gateway: a request id must be a string or an integer")]
+            if mid in self._pending:
+                return [], [_error(mid, -32600, f"SMCP gateway: request id {mid!r} is already in use")]
             if method == "initialize":
                 return self._on_initialize(msg, smcp.get(HELLO))
             if method == "tools/list":
@@ -291,13 +326,24 @@ class Gateway:
                 return [msg], []
             if method == "tools/call":
                 return self._on_call(msg, smcp)
-            if isinstance(method, str) and method.startswith(SESSION_GATED) and mid is not None:
-                problem = self._session_problem()
-                if problem:
-                    self.audit.append("REQUEST_DENIED", method=method, peerId=self.server_id, reason=problem)
-                    return [], [_error(mid, -32001, f"SMCP denied {method}: {problem}")]
-                self._pending[mid] = (method, (msg.get("params") or {}))
+            if isinstance(method, str) and method.startswith(SESSION_GATED):
+                return self._on_gated(msg, smcp)
+            self._pending[mid] = ("passthrough", method)
             return [msg], []
+
+    def _on_gated(self, msg: dict, smcp: dict) -> tuple[list[dict], list[dict]]:
+        """resources/*, prompts/*, completion/*: they carry content to the model, so
+        they need a session and, for SMCP sessions, a sealed envelope like a tool call."""
+        method, mid = msg["method"], msg["id"]
+        params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
+        self._reload()
+        _, problem = self._authenticate_call(smcp.get(CALL), method, _without_meta(params), None, self.clock())
+        if problem:
+            self.audit.append("REQUEST_DENIED", sessionId=self._sid(), method=method, peerId=self.server_id,
+                              reason=problem)
+            return [], [_error(mid, -32001, f"SMCP denied {method}: {problem}")]
+        self._pending[mid] = (method, params)
+        return [msg], []
 
     def handle_server(self, msg: dict) -> tuple[list[dict], list[dict]]:
         """Handle one server message. Returns (to_client, to_server)."""
@@ -307,10 +353,15 @@ class Gateway:
                 if mid is None:
                     return [msg], []  # notification
                 return self._on_server_request(msg)
-            pending = self._pending.pop(mid, None) if mid is not None else None
+            pending = self._pending.pop(mid, None) if isinstance(mid, (str, int)) else None
             if pending is None:
-                return [msg], []
+                if mid is None:
+                    return [msg], []  # an error about a message the server could not parse
+                self.log(f"dropped a response to request id {mid!r}, which is not pending")
+                return [], []
             kind, state = pending
+            if kind == "passthrough":
+                return [msg], []
             if kind == "initialize":
                 return [self._finish_initialize(msg, state)], []
             if kind == "tools/list":
@@ -355,6 +406,8 @@ class Gateway:
         body = {k: v for k, v in hello.items() if k != "signature"}
         if body.get("version") != VERSION:
             raise AuthError(f"unsupported SMCP version {body.get('version')!r}")
+        if "audience" in body and body["audience"] != self.d.gateway_id:
+            raise AuthError(f"the hello is addressed to {body['audience']}, not to this gateway")
         self._reload()
         agent = self.registry.active(body.get("agentId"))
         if agent is None:
@@ -641,25 +694,30 @@ class Gateway:
         ctx, decision, record, args, name = state
         result = msg.get("result")
         if not isinstance(result, dict):
-            self._audit_call(ctx, name, record, decision, "UPSTREAM_ERROR", args, None)
-            return msg
+            error = msg.get("error") if isinstance(msg.get("error"), dict) else {}
+            clean_error, applied = obl.apply_to_error(error, decision.obligations)
+            if self.session is not None:
+                self._label(name, record, ctx, json.dumps(clean_error), applied)
+            self._audit_call(ctx, name, record, decision, "UPSTREAM_ERROR", args, None, applied)
+            return {"jsonrpc": "2.0", "id": msg.get("id"), "error": clean_error or
+                    {"code": -32603, "message": "the upstream server sent neither a result nor an error"}}
         _clean_result_meta(result)
         clean, applied = obl.apply(result, decision.obligations)
         action = "TOOL_ERROR" if clean.get("isError") else "SUCCESS"
-        if action == "SUCCESS" and self.session is not None:
-            self._label(name, record, ctx, clean, applied)
+        if self.session is not None:  # an error result can carry the data too
+            self._label(name, record, ctx, _result_text(clean), applied)
         ref = self._audit_call(ctx, name, record, decision, action, args, clean, applied)
         signed = self._sign_response(ctx, record, decision, applied, action, ref, clean)
         clean["_meta"] = {**(clean.get("_meta") or {}), RESPONSE: signed}
         msg["result"] = clean
         return msg
 
-    def _label(self, name: str, record: ToolRecord | None, ctx: dict, result: dict, applied: dict) -> None:
+    def _label(self, name: str, record: ToolRecord | None, ctx: dict, text: str, applied: dict) -> None:
         flow = self.session.flow
         tcid = ctx.get("toolCallId")
         produces = (record.security.get("flow") or {}).get("produces") or [] if record else []
         for label in produces:
-            flow.add(label, name, tcid, _result_text(result) if label == "confidential" else "")
+            flow.add(label, name, tcid, text if label == "confidential" else "")
         if applied.get("instructionsRemoved") and "untrusted" not in produces:
             flow.add("untrusted", name, tcid, why="instruction-like content removed from the output")
 

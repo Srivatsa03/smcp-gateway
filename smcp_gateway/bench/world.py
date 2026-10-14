@@ -294,9 +294,9 @@ class World:
         path.write_text(yaml.safe_dump(cfg, sort_keys=False))
         return path
 
-    def sign(self, *files: Path) -> None:
+    def sign(self, *files: Path, serial: int | None = None) -> None:
         for f in files:
-            sign_file(f, self.governance.key, self.governance.id)
+            sign_file(f, self.governance.key, self.governance.id, serial)
 
     def _cfg(self, config: Path) -> dict:
         return yaml.safe_load(Path(config).read_text())

@@ -34,3 +34,18 @@ def test_structured_content():
     res = {"content": [], "structuredContent": {"rows": [{"ssn": 1}, {"ssn": 2}]}}
     out, _ = apply(res, [{"redactFields": ["ssn"]}, {"maxRows": 1}])
     assert out["structuredContent"] == {"rows": [{"ssn": "[REDACTED]"}]}
+
+
+def test_json_form_secrets_and_resource_blocks():
+    from smcp_gateway.obligations import apply, apply_to_error
+    result = {"content": [{"type": "text", "text": '{"password": "hunter2hunter2xx", "user": "dana"}'},
+                          {"type": "resource", "resource": {"uri": "file:///.env",
+                                                            "text": "api_key = abcdefghijklmnopq"}}],
+              "structuredContent": {"api_key": "abcdefghijklmnopq", "n": 1}}
+    out, applied = apply(result, [{"redactSecrets": True}])
+    text = json.dumps(out)
+    assert "hunter2" not in text and "abcdefghijklmnopq" not in text and 'dana' in text
+    assert out["structuredContent"]["n"] == 1 and applied["secretsRedacted"] == ["generic_secret"]
+    err, _ = apply_to_error({"code": 1, "message": "bad token=abcdefghijklmnopq", "data": {"password": "zzzzzzzzzzzzzz"}},
+                            [{"redactSecrets": True}])
+    assert "abcdefghijklmnopq" not in json.dumps(err) and "zzzzzzzzzzzzzz" not in json.dumps(err)

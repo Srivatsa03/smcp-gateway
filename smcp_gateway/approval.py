@@ -27,22 +27,39 @@ from __future__ import annotations
 
 import time
 
-from .crypto import digest, sign, verify
+from .crypto import canonical, digest, sign, verify
 from .protocol import new_ref
 from .registry import Registry
 
-ARGS_PREVIEW_BYTES = 4096
+PREVIEW_CHARS = 512   # per string value
+PREVIEW_ITEMS = 50    # per list
+
+
+def preview(value: object) -> object:
+    """The arguments as the user will see them: every key kept, in sorted order,
+    with long strings and lists shortened and marked. Nothing is dropped
+    silently, so a short field cannot hide behind a long one."""
+    if isinstance(value, dict):
+        return {k: preview(value[k]) for k in sorted(value)}
+    if isinstance(value, list):
+        shown = [preview(v) for v in value[:PREVIEW_ITEMS]]
+        if len(value) > PREVIEW_ITEMS:
+            shown.append(f"[... {len(value) - PREVIEW_ITEMS} more items]")
+        return shown
+    if isinstance(value, str) and len(value) > PREVIEW_CHARS:
+        return value[:PREVIEW_CHARS] + f"[... {len(value) - PREVIEW_CHARS} more characters]"
+    return value
 
 
 def approval_request(*, session_id: str, tool: str, args: dict, approver_id: str,
                      reasons: list[str], ttl: float, now: float) -> dict:
-    preview = args if len(repr(args)) <= ARGS_PREVIEW_BYTES else {"_truncated": repr(args)[:ARGS_PREVIEW_BYTES]}
     return {
         "type": "SMCP.ApprovalRequest",
         "requestId": new_ref("AR"),
         "sessionId": session_id,
         "tool": tool,
-        "arguments": preview,
+        "arguments": preview(args),
+        "argumentsBytes": len(canonical(args)),
         "argsDigest": digest(args),
         "approverId": approver_id,
         "reasons": reasons,

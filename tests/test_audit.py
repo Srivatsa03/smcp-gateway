@@ -95,3 +95,26 @@ def test_checkpoint_interval(tmp_path):
     for i in range(5):
         log.append("TOOL_CALL", toolName=f"t{i}")
     assert json.loads(cp.read_text())["count"] == 3  # written at 3; 4 and 5 are not covered yet
+
+
+def test_two_processes_share_one_log(tmp_path):
+    """Two gateways on one config (one per client connection) keep the chain linear."""
+    import subprocess
+    import sys
+    from smcp_gateway.crypto import save_key
+    key = generate_key()
+    save_key(key, tmp_path / "k.pem")
+    script = (
+        "import sys\n"
+        "from smcp_gateway.audit import AuditLog\n"
+        "from smcp_gateway.crypto import load_key\n"
+        f"log = AuditLog({str(tmp_path / 'a.jsonl')!r}, load_key({str(tmp_path / 'k.pem')!r}), 'G2TEST',\n"
+        f"             checkpoint={str(tmp_path / 'cp.json')!r})\n"
+        "for i in range(150):\n"
+        "    log.append('TOOL_CALL', toolName=sys.argv[1] + str(i))\n"
+    )
+    procs = [subprocess.Popen([sys.executable, "-c", script, name]) for name in ("a", "b", "c")]
+    assert all(p.wait(timeout=60) == 0 for p in procs)
+    checkpoint = json.loads((tmp_path / "cp.json").read_text())
+    r = verify_log(tmp_path / "a.jsonl", {"G2TEST": public_b64(key)}, checkpoint)
+    assert r.ok and r.entries == 450 and checkpoint["count"] == 450

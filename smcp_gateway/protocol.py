@@ -51,8 +51,11 @@ def transcript(hello: dict, server_body: dict) -> bytes:
     return canonical({"hello": hello, "server": server_body})
 
 
-def make_hello(agent_id: str, agent_key, delegation: list[dict] | tuple = (), *, now: float | None = None):
-    """Return (hello, ephemeral private key) for the agent side of the handshake."""
+def make_hello(agent_id: str, agent_key, delegation: list[dict] | tuple = (), *, audience: str | None = None,
+               now: float | None = None):
+    """Return (hello, ephemeral private key) for the agent side of the handshake.
+
+    ``audience`` names the gateway the hello is for; a different gateway refuses it."""
     eph, eph_pub = ephemeral()
     body = {
         "version": VERSION,
@@ -62,6 +65,8 @@ def make_hello(agent_id: str, agent_key, delegation: list[dict] | tuple = (), *,
         "delegation": list(delegation),
         "timestamp": time.time() if now is None else now,
     }
+    if audience is not None:
+        body["audience"] = audience
     return {**body, "signature": sign(agent_key, body)}, eph
 
 

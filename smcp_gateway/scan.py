@@ -94,22 +94,36 @@ def scan_text(text: str, *, context: str = "description", where: str = "descript
     return found
 
 
-def _schema_descriptions(schema: object, path: str = "inputSchema"):
-    if isinstance(schema, dict):
-        if isinstance(schema.get("description"), str):
-            yield path, schema["description"]
-        for key, value in (schema.get("properties") or {}).items():
-            yield from _schema_descriptions(value, f"{path}.{key}")
-        if isinstance(schema.get("items"), dict):
-            yield from _schema_descriptions(schema["items"], f"{path}[]")
+def _texts(obj: object, path: str):
+    """Every ``description`` and ``title`` string anywhere in a schema or
+    annotations object (properties, items, anyOf, oneOf, $defs, ...), plus
+    string ``default`` and ``examples`` values, which a model also reads."""
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            where = f"{path}.{key}"
+            if key in ("description", "title", "default") and isinstance(value, str):
+                yield where, value
+            elif key == "examples" and isinstance(value, list):
+                for i, ex in enumerate(value):
+                    if isinstance(ex, str):
+                        yield f"{where}[{i}]", ex
+            else:
+                yield from _texts(value, where)
+    elif isinstance(obj, list):
+        for i, value in enumerate(obj):
+            yield from _texts(value, f"{path}[{i}]")
 
 
 def scan_tool(tool: dict, other_tools: tuple[str, ...] | list[str] = ()) -> list[Finding]:
-    """Scan a tool's description and every description inside its input schema."""
+    """Scan a tool's description and title, and every text inside its input
+    schema, output schema and annotations."""
     others = [n for n in other_tools if n != tool.get("name")]
     found = scan_text(tool.get("description") or "", other_tools=others)
-    for path, text in _schema_descriptions(tool.get("inputSchema")):
-        found += scan_text(text, where=path, other_tools=others)
+    if isinstance(tool.get("title"), str):
+        found += scan_text(tool["title"], where="title", other_tools=others)
+    for field in ("inputSchema", "outputSchema", "annotations"):
+        for path, text in _texts(tool.get(field), field):
+            found += scan_text(text, where=path, other_tools=others)
     return found
 
 

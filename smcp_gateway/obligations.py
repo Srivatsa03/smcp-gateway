@@ -1,8 +1,13 @@
 """Policy Enforcement Point for results: apply obligations to a tools/call result.
 
 Obligations are what a PERMIT_WITH_OBLIGATIONS decision attaches: drop named
-fields, cap the number of rows, or mask secrets. They act on JSON text blocks,
-on ``structuredContent``, and (for secrets) on any text.
+fields, cap the number of rows, or mask secrets.
+
+Where they act: the text of ``text`` content blocks and of embedded ``resource``
+blocks (field and row rules when that text is JSON), every string in
+``structuredContent``, and, for secrets and instructions, the message and data
+of a JSON-RPC error. Binary content (images, audio, resource blobs) is not
+inspected.
 
 ``stripInstructions`` is an extension: it removes instruction-like spans from
 text output before the agent sees it (see scan.py).
@@ -26,7 +31,9 @@ SECRET_PATTERNS = [
     ("github_token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}")),
     ("llm_api_key", re.compile(r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}")),
     ("bearer", re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/-]{16,}")),
-    ("generic_secret", re.compile(r"(?i)((?:api[_-]?key|secret|token|password)\s*[=:]\s*['\"]?)[A-Za-z0-9_\-/+=]{12,}")),
+    # key=value, key: value, and the JSON form "key": "value"
+    ("generic_secret", re.compile(r"(?i)((?:api[_-]?key|secret|token|password)['\"]?\s*[=:]\s*['\"]?)"
+                                  r"[A-Za-z0-9_\-/+=]{12,}")),
 ]
 
 
@@ -77,49 +84,69 @@ def empty_applied() -> dict:
     return {"redactedFields": [], "truncated": False, "secretsRedacted": [], "instructionsRemoved": []}
 
 
-def apply(result: dict, obligations: list[dict]) -> tuple[dict, dict]:
-    applied = empty_applied()
-    if not obligations:
-        return result, applied
-    fields: set[str] = set()
-    max_rows: int | None = None
-    secrets = False
-    strip = False
-    for ob in obligations:
-        if "redactFields" in ob:
-            fields.update(ob["redactFields"])
-        if "maxRows" in ob:
-            n = int(ob["maxRows"])
-            max_rows = n if max_rows is None else min(max_rows, n)
-        if ob.get("redactSecrets"):
-            secrets = True
-        if ob.get("stripInstructions"):
-            strip = True
+class _Plan:
+    def __init__(self, obligations: list[dict]) -> None:
+        self.fields: set[str] = set()
+        self.max_rows: int | None = None
+        self.secrets = False
+        self.strip = False
+        for ob in obligations:
+            if "redactFields" in ob:
+                self.fields.update(ob["redactFields"])
+            if "maxRows" in ob:
+                n = int(ob["maxRows"])
+                self.max_rows = n if self.max_rows is None else min(self.max_rows, n)
+            if ob.get("redactSecrets"):
+                self.secrets = True
+            if ob.get("stripInstructions"):
+                self.strip = True
 
-    out = copy.deepcopy(result)
-    for block in out.get("content") or []:
-        if not isinstance(block, dict) or block.get("type") != "text":
-            continue
-        text = block.get("text", "")
-        if fields or max_rows is not None:
+    @property
+    def shapes(self) -> bool:
+        return bool(self.fields) or self.max_rows is not None
+
+    def text(self, text: str, applied: dict) -> str:
+        if self.shapes:
             try:
                 parsed = json.loads(text)
             except (json.JSONDecodeError, TypeError):
                 parsed = None
             if isinstance(parsed, (dict, list)):
-                text = json.dumps(_transform(parsed, fields, max_rows, applied))
-        if secrets:
+                text = json.dumps(_transform(parsed, self.fields, self.max_rows, applied))
+        if self.secrets:
             text, found = redact_secrets(text)
             applied["secretsRedacted"].extend(found)
-        if strip:
+        if self.strip:
             text, kinds = strip_instructions(text)
             applied["instructionsRemoved"].extend(kinds)
-        block["text"] = text
-    if "structuredContent" in out and (fields or max_rows is not None or secrets or strip):
-        sc = _transform(out["structuredContent"], fields, max_rows, applied)
-        if strip:
+        return text
+
+
+def _finish(applied: dict) -> dict:
+    applied["secretsRedacted"] = sorted(set(applied["secretsRedacted"]))
+    applied["instructionsRemoved"] = sorted(set(applied["instructionsRemoved"]))
+    return applied
+
+
+def apply(result: dict, obligations: list[dict]) -> tuple[dict, dict]:
+    applied = empty_applied()
+    if not obligations:
+        return result, applied
+    plan = _Plan(obligations)
+    out = copy.deepcopy(result)
+    for block in out.get("content") or []:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text":
+            block["text"] = plan.text(str(block.get("text", "")), applied)
+        elif block.get("type") == "resource" and isinstance(block.get("resource"), dict) \
+                and isinstance(block["resource"].get("text"), str):
+            block["resource"]["text"] = plan.text(block["resource"]["text"], applied)
+    if "structuredContent" in out and (plan.shapes or plan.secrets or plan.strip):
+        sc = _transform(out["structuredContent"], plan.fields, plan.max_rows, applied)
+        if plan.strip:
             sc = _strip_strings(sc, applied)
-        if secrets:
+        if plan.secrets:
             masked, found = redact_secrets(json.dumps(sc))
             applied["secretsRedacted"].extend(found)
             try:
@@ -127,6 +154,22 @@ def apply(result: dict, obligations: list[dict]) -> tuple[dict, dict]:
             except json.JSONDecodeError:
                 sc = REDACTED  # a mask that broke the JSON: drop the block, never pass it through
         out["structuredContent"] = sc
-    applied["secretsRedacted"] = sorted(set(applied["secretsRedacted"]))
-    applied["instructionsRemoved"] = sorted(set(applied["instructionsRemoved"]))
-    return out, applied
+    return out, _finish(applied)
+
+
+def apply_to_error(error: dict, obligations: list[dict]) -> tuple[dict, dict]:
+    """Mask secrets and strip instructions in a JSON-RPC error from the server."""
+    applied = empty_applied()
+    plan = _Plan(obligations)
+    if not (plan.secrets or plan.strip) or not error:
+        return error, applied
+    out = copy.deepcopy(error)
+    if isinstance(out.get("message"), str):
+        out["message"] = plan.text(out["message"], applied)
+    if "data" in out:
+        masked = plan.text(json.dumps(out["data"]), applied)
+        try:
+            out["data"] = json.loads(masked)
+        except json.JSONDecodeError:
+            out["data"] = REDACTED
+    return out, _finish(applied)

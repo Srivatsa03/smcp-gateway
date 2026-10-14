@@ -37,6 +37,9 @@ def test_paths(path, ok):
     ("https://evil.test/", False), ("https://acme.example.evil.test/", False),
     ("https://reports.acme.example@evil.test/", False),  # userinfo trick
     ("ftp://reports.acme.example/", False), ("javascript:alert(1)", False), ("not a url", False),
+    ("http://evil.com\\@reports.acme.example/x", False),  # Python and Node disagree on this host
+    ("https://u@reports.acme.example/", False), ("https://reports.acme.example/a b", False),
+    ("https://reports.acme.example/q?x=%2F", True),
 ])
 def test_urls(url, ok):
     assert (check_url(url, [".acme.example"]) is None) is ok
@@ -58,6 +61,14 @@ def test_check_combines_schema_and_guards():
     problems = check(guards, {"filename": "q;id", "path": "/etc/x"},
                      {"type": "object", "required": ["filename", "path"]})
     assert len(problems) == 2 and "arguments.path" in problems[1]
+
+
+def test_pattern_end_anchor_is_ecma():
+    """Python's $ also matches before a final newline; a guard must not."""
+    schema = {"properties": {"f": {"pattern": "^[a-z.]+$"}}}
+    assert validate({"f": "report.pdf"}, schema) == []
+    assert validate({"f": "report.pdf\n"}, schema)
+    assert validate({"f": "a$"}, {"pattern": "^a[$]$"}) == []  # a $ inside a class is a character
 
 
 def test_list_arguments_check_every_item():

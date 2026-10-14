@@ -10,6 +10,11 @@ and the latest hash, rewritten after every entry. ``verify_log`` with the
 checkpoint catches a truncated log, and the gateway refuses to start on a log
 that is shorter than its checkpoint, so it never writes over the evidence.
 
+Several gateway processes may share one log (an MCP client starts one stdio
+gateway per connection). Each append takes an exclusive file lock and reads the
+current tail under it, so the chain stays linear. On systems without ``fcntl``
+only one process may write a log.
+
 Rewriting the checkpoint atomically after every entry is most of the
 extensions' per-call cost (about 0.6 ms on macOS). ``checkpoint_every=N``
 rewrites it every N entries instead; then up to N-1 trailing entries can be cut
@@ -23,12 +28,18 @@ checkpoint`` output to a witness. See docs/LIMITATIONS.md.
 
 from __future__ import annotations
 
+import contextlib
 import datetime as _dt
 import json
 import os
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # Windows: one process per log
+    fcntl = None
 
 from .crypto import digest, sign, verify
 
@@ -72,8 +83,40 @@ class AuditLog:
                     f"ending in {str(cp.get('headHash'))[:16]}...; the log was truncated or replaced. "
                     "Investigate before starting the gateway on it.")
 
+    @contextlib.contextmanager
+    def _locked(self):
+        """The thread lock, plus an exclusive lock on the log file shared with other processes."""
+        with self._lock, self.path.open("ab+") as f:
+            if fcntl is not None:
+                fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                yield f
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(f, fcntl.LOCK_UN)
+
+    @staticmethod
+    def _tail(f) -> tuple[str, int]:
+        """(hash of the last entry, number of entries) read from the end of the file."""
+        f.seek(0, os.SEEK_END)
+        size = f.tell()
+        if size == 0:
+            return GENESIS, 0
+        chunk = 16384
+        while True:
+            start = max(0, size - chunk)
+            f.seek(start)
+            lines = [line for line in f.read(size - start).split(b"\n") if line.strip()]
+            if lines and (start == 0 or len(lines) > 1):
+                last = json.loads(lines[-1])
+                return last["entryHash"], last["index"] + 1
+            if start == 0:
+                return GENESIS, 0
+            chunk *= 4
+
     def append(self, event: str, **fields) -> str:
-        with self._lock:
+        with self._locked() as f:
+            self._prev, self._index = self._tail(f)
             ts = _now_iso()
             ref = f"AUDIT-{ts[:19].replace(':', '').replace('-', '')}-{self._index:06d}"
             entry = {
@@ -90,18 +133,30 @@ class AuditLog:
             entry_hash = digest(entry)
             entry["entryHash"] = entry_hash
             entry["signature"] = sign(self.key, {"entryHash": entry_hash})
-            with self.path.open("a") as f:
-                f.write(json.dumps(entry, sort_keys=True) + "\n")
-                if self.fsync:
-                    f.flush()
-                    os.fsync(f.fileno())
+            f.seek(0, os.SEEK_END)
+            f.write((json.dumps(entry, sort_keys=True) + "\n").encode())
+            f.flush()
+            if self.fsync:
+                os.fsync(f.fileno())
             self._prev, self._index = entry_hash, self._index + 1
             if self.checkpoint is not None and self._index % self.checkpoint_every == 0:
                 self._write_checkpoint()
             return ref
 
+    def entries(self, event: str) -> list[dict]:
+        """Every entry of one event type, oldest first."""
+        if not self.path.exists():
+            return []
+        with self._lock, self.path.open() as f:
+            return [e for e in (json.loads(line) for line in f if line.strip()) if e.get("event") == event]
+
     def head(self) -> dict:
         """A signed statement of the log's current length and latest hash."""
+        with self._locked() as f:
+            self._prev, self._index = self._tail(f)
+            return self._head()
+
+    def _head(self) -> dict:
         body = {
             "type": "SMCP.AuditCheckpoint",
             "log": self.path.name,
@@ -116,7 +171,7 @@ class AuditLog:
         assert self.checkpoint is not None
         self.checkpoint.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.checkpoint.with_name(self.checkpoint.name + ".tmp")
-        tmp.write_text(json.dumps(self.head(), sort_keys=True) + "\n")
+        tmp.write_text(json.dumps(self._head(), sort_keys=True) + "\n")
         os.replace(tmp, self.checkpoint)
 
 
@@ -129,7 +184,9 @@ class VerifyResult:
 
 
 def verify_log(path: Path, public_keys: dict[str, str], checkpoint: dict | None = None) -> VerifyResult:
-    """Check the chain and every signature. ``public_keys`` maps signer id to key.
+    """Check the chain and every signature. ``public_keys`` maps signer id to key;
+    pass only gateway keys (``Registry.gateway_keys``), or any registered key
+    holder could write a log that verifies.
 
     With a ``checkpoint`` (an ``SMCP.AuditCheckpoint``), also check that the log
     still holds every entry the checkpoint vouches for.

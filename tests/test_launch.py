@@ -19,11 +19,33 @@ def test_artifact_digest(tmp_path):
     (d / "server.py").write_text("print(1)\n")
     (d / "pkg" / "util.py").write_text("x = 1\n")
     first = artifact_digest(d)
-    (d / "pkg" / "__pycache__").mkdir()
-    (d / "pkg" / "__pycache__" / "util.cpython-312.pyc").write_bytes(b"junk")
-    assert artifact_digest(d) == first  # caches do not count
-    (d / "pkg" / "util.py").write_text("x = 2\n")
-    assert artifact_digest(d) != first
+    assert artifact_digest(d) == first
+    (d / ".git").mkdir()
+    (d / ".git" / "HEAD").write_text("ref")
+    assert artifact_digest(d) == first  # version control metadata does not count
+
+    changes = [
+        lambda: (d / "pkg" / "__pycache__").mkdir() or (d / "pkg" / "__pycache__" / "util.pyc").write_bytes(b"x"),
+        lambda: (d / "node_modules").mkdir() or (d / "node_modules" / "dep.js").write_text("1"),
+        lambda: (d / "pkg" / "util.py").write_text("x = 2\n"),
+    ]
+    seen = {first}
+    for change in changes:  # a planted bytecode file, a nested dependency, an edited source
+        change()
+        digest = artifact_digest(d)
+        assert digest not in seen
+        seen.add(digest)
+
+    outside = tmp_path / "lib"
+    outside.mkdir()
+    (outside / "core.py").write_text("a = 1\n")
+    (d / "lib").symlink_to(outside, target_is_directory=True)
+    linked = artifact_digest(d)
+    (outside / "core.py").write_text("a = 2\n")
+    assert artifact_digest(d) != linked  # the target of a symlink is hashed too
+    (d / "loop").symlink_to(d, target_is_directory=True)
+    artifact_digest(d)  # a loop terminates
+
     assert check_artifact(d, first) and "spoofed or changed" in check_artifact(d, first)
     assert check_artifact(d, None) is None
     assert "names no serverArtifact" in check_artifact(None, first)
@@ -38,7 +60,7 @@ def test_spoofed_install_refused_over_stdio(world):
         c.start()
     c.close()
     events = [json.loads(line)["event"] for line in world.audit_path(cfg).read_text().splitlines()]
-    assert events == ["SERVER_REJECTED"]
+    assert events == ["CONFIG_LOADED", "CONFIG_LOADED", "SERVER_REJECTED"]
     assert not (world.root / "captured-t-spoof.jsonl").exists()
 
 
@@ -94,3 +116,24 @@ def test_cli_sign_and_artifact(tmp_path, world):
     FileVerifier(anchor["id"], anchor["publicKey"])(f, f.read_bytes())
     out = run("artifact", str(world.genuine))
     assert out.stdout.strip() == world.genuine_sha256
+
+
+def test_signed_config_rollback_refused_live_and_after_restart(world):
+    cfg = world.write("t-rollback", profile="extended")
+    reg = world.registry_path(cfg)
+    old = (reg.read_bytes(), (reg.parent / (reg.name + ".sig")).read_bytes())  # serial 1, report active
+    world.revoke(cfg, "report")  # serial 2
+    d = Deployment.load(cfg)
+    assert d.registry.active(world.report.id) is None
+
+    def restore():
+        reg.write_bytes(old[0])
+        (reg.parent / (reg.name + ".sig")).write_bytes(old[1])
+    restore()  # put back the signed pre-revocation registry
+    assert d.registry.reload_if_changed() is False
+    assert "rollback" in d.registry.pop_rejection() and d.registry.active(world.report.id) is None
+
+    with pytest.raises(ConfigSignatureError, match="rollback"):
+        Deployment.load(cfg)  # a restarted gateway reads serial 2 back from the audit log
+    loaded = [json.loads(line) for line in world.audit_path(cfg).read_text().splitlines()]
+    assert [e["serial"] for e in loaded if e["event"] == "CONFIG_LOADED" and e["file"].endswith(reg.name)] == [2]

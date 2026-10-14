@@ -286,14 +286,38 @@ class Verified:
     response: dict | None = None
 
 
-def check_server_hello(registry: Registry, hello: dict, eph, server_hello: object) -> tuple[str, bytes, dict]:
-    """Agent side of the handshake: verify the gateway and derive the session key."""
+GATEWAY_TYPE = "G2"  # governance.policy: the only entity type that may act as a policy enforcement point
+
+
+def _gateway_problem(registry: Registry, signer: object, expected: str | None) -> str | None:
+    """Why ``signer`` may not speak for the gateway, or None if it may."""
+    if expected is not None and signer != expected:
+        return f"{signer} is not the expected gateway {expected}"
+    entity = registry.active(signer if isinstance(signer, str) else None)
+    if entity is None:
+        return f"gateway {signer} is not an active registered identity"
+    if not entity.id.startswith(GATEWAY_TYPE):
+        return f"{entity.label} is a {entity.kind} identity, not a gateway ({GATEWAY_TYPE})"
+    return None
+
+
+def check_server_hello(registry: Registry, hello: dict, eph, server_hello: object, *,
+                       gateway_id: str | None = None, server_id: str | None = None) -> tuple[str, bytes, dict]:
+    """Agent side of the handshake: verify the gateway and derive the session key.
+
+    Only a registered gateway identity (or exactly ``gateway_id``) may answer,
+    for a registered tool server (or exactly ``server_id``)."""
     if not isinstance(server_hello, dict):
         raise ProtocolError("the server did not answer with smcp/serverHello (no SMCP gateway?)")
     body = {k: v for k, v in server_hello.items() if k != "signature"}
-    gateway = registry.active(body.get("gatewayId"))
-    if gateway is None:
-        raise ProtocolError(f"gateway {body.get('gatewayId')} is not an active registered identity")
+    problem = _gateway_problem(registry, body.get("gatewayId"), gateway_id)
+    if problem:
+        raise ProtocolError(problem)
+    gateway = registry.active(body["gatewayId"])
+    peer = registry.active(body.get("peerId"))
+    if peer is None or peer.kind != "tool" or (server_id is not None and peer.id != server_id):
+        raise ProtocolError(f"the serverHello names {body.get('peerId')} as the server, which is not "
+                            f"{'the expected server' if server_id else 'an active registered tool server'}")
     if not verify(gateway.public_key, body, server_hello.get("signature")):
         raise ProtocolError("the serverHello signature does not verify against the registry")
     if body.get("helloDigest") != digest(hello):
@@ -320,8 +344,14 @@ class SMCPClient(MCPClient):
         env: dict | None = None,
         handlers: dict | None = None,
         capabilities: dict | None = None,
+        gateway_id: str | None = None,
+        server_id: str | None = None,
     ) -> None:
+        """``gateway_id`` and ``server_id`` pin who may answer; ``gateway_id`` is also
+        the hello's audience, so a gateway of another deployment refuses it."""
         super().__init__(command, url=url, env=env, handlers=handlers, capabilities=capabilities)
+        self.gateway_id = gateway_id
+        self.server_id = server_id
         self.agent_id = agent_id
         self.agent_key = agent_key
         self.registry = registry
@@ -333,14 +363,15 @@ class SMCPClient(MCPClient):
         self.last_envelope: dict | None = None
 
     def start(self) -> dict:
-        hello, eph = make_hello(self.agent_id, self.agent_key, self.delegation)
+        hello, eph = make_hello(self.agent_id, self.agent_key, self.delegation, audience=self.gateway_id)
         params = {**self._init_params(), "_meta": {HELLO: hello}}
         resp = self.peer.request("initialize", params)
         if "error" in resp:
             raise ProtocolError(resp["error"].get("message", "initialize failed"))
         result = resp["result"]
         sh = (result.get("_meta") or {}).get(SERVER_HELLO)
-        self.session_id, self.key, self.server_hello = check_server_hello(self.registry, hello, eph, sh)
+        self.session_id, self.key, self.server_hello = check_server_hello(
+            self.registry, hello, eph, sh, gateway_id=self.gateway_id, server_id=self.server_id)
         self.init_result = result
         self.peer.notify("notifications/initialized")
         return result
@@ -361,9 +392,17 @@ class SMCPClient(MCPClient):
             meta[APPROVAL] = approval
         return self.peer.request("tools/call", {"name": name, "arguments": arguments or {}, "_meta": meta})
 
+    def request(self, method: str, params: dict | None = None) -> dict:
+        """A sealed request other than tools/call: resources/*, prompts/*, completion/*."""
+        params = dict(params or {})
+        env = self.envelope(method, {k: v for k, v in params.items() if k != "_meta"})
+        params["_meta"] = {**(params.get("_meta") or {}), CALL: env}
+        return self.peer.request(method, params)
+
     def verify_response(self, resp: dict, envelope: dict | None = None) -> Verified:
         """Check the gateway's signature, the result digest, and the call binding."""
-        return check_response(self.registry, resp, envelope or self.last_envelope)
+        return check_response(self.registry, resp, envelope or self.last_envelope,
+                              gateway_id=(self.server_hello or {}).get("gatewayId"), session_id=self.session_id)
 
     def approval_request(self, resp: dict) -> dict | None:
         """The approval request in a denial, after checking the gateway signed it."""
@@ -371,7 +410,11 @@ class SMCPClient(MCPClient):
         return (v.response or {}).get("approvalRequest") if v.ok else None
 
 
-def check_response(registry: Registry, resp: dict, envelope: dict | None = None) -> Verified:
+def check_response(registry: Registry, resp: dict, envelope: dict | None = None, *,
+                   gateway_id: str | None = None, session_id: str | None = None) -> Verified:
+    """Verify a signed tool result. ``gateway_id`` and ``session_id`` should be the
+    ones from this session's serverHello; without them any registered gateway
+    identity is accepted."""
     result = resp.get("result")
     if not isinstance(result, dict):
         return Verified(False, "no result to verify")
@@ -379,9 +422,14 @@ def check_response(registry: Registry, resp: dict, envelope: dict | None = None)
     if not isinstance(signed, dict):
         return Verified(False, "the result carries no smcp/response")
     body = {k: v for k, v in signed.items() if k != "signature"}
+    problem = _gateway_problem(registry, body.get("signedBy"), gateway_id)
+    if problem:
+        return Verified(False, f"the response is not from this session's gateway: {problem}", body)
     gateway = registry.active(body.get("signedBy"))
-    if gateway is None or not verify(gateway.public_key, body, signed.get("signature")):
+    if not verify(gateway.public_key, body, signed.get("signature")):
         return Verified(False, "the response signature does not verify", body)
+    if session_id is not None and body.get("sessionId") != session_id:
+        return Verified(False, "the signed response belongs to a different session", body)
     if body.get("resultDigest") != digest(result_without_response(result)):
         return Verified(False, "the result was modified after the gateway signed it", body)
     if envelope and body.get("toolCallId") != envelope.get("toolCallId"):

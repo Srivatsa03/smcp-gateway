@@ -61,11 +61,18 @@ class ToolRecord:
         return self.security.get("sensitivityLevel", "internal")
 
 
+PINNED_OPTIONAL = ("title", "annotations", "outputSchema")
+
+
 def definition_hash(tool: dict) -> str:
+    """SHA-256 of everything about a tool the model or client acts on: name,
+    description, input schema, and, when present, title, annotations (such as
+    readOnlyHint) and output schema."""
     return digest({
         "name": tool.get("name"),
         "description": tool.get("description", ""),
         "inputSchema": tool.get("inputSchema", {}),
+        **{k: tool[k] for k in PINNED_OPTIONAL if k in tool},
     })
 
 
@@ -175,6 +182,12 @@ class Registry(WatchedFile):
     def label(self, code: str | None) -> str:
         e = self.entity(code)
         return e.label if e else str(code)
+
+    def gateway_keys(self) -> dict[str, str]:
+        """Public keys of every gateway identity (type G2): the only keys that may
+        sign audit entries and checkpoints. Revoked gateways are included, so
+        their old entries still verify."""
+        return {e.id: e.public_key for e in self.entities.values() if e.id.startswith("G2") and e.public_key}
 
     def server_requests(self, server_id: str) -> tuple[str, ...]:
         """Server-to-client request methods this server may send (sampling is off by default)."""

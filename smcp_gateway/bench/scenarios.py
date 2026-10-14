@@ -401,7 +401,8 @@ def command_injection(w: World, profile: str) -> Result:
     outcome, evidence = _judge(_uid(_text(r)), r, "got through")
     with _plain() as p:
         variants = [_call_variant(c, p, f"filename {v!r}", "convert_file", {"filename": v}, _uid)
-                    for v in ("q3.docx && id", "$(id).docx", "q3`id`.docx", "q3.docx\nid", "q3.docx | id")]
+                    for v in ("q3.docx && id", "$(id).docx", "q3`id`.docx", "q3.docx\nid", "q3.docx | id",
+                              "q3.docx\n")]
     c.close()
     return _grade(outcome, evidence, "ext: argumentGuards pattern allowlist", baseline, variants)
 
@@ -754,6 +755,12 @@ def _loosen_delete_user(data: dict) -> None:
 @scenario(11, "Configuration Drift", "an unreviewed edit loosens delete_user in the live registry")
 def configuration_drift(w: World, profile: str) -> Result:
     cfg = w.write(_tag("s26", profile), profile=profile)
+    loose = None
+    if profile == EXT:  # history: an older, looser registry that governance once signed
+        w.edit_registry(cfg, _loosen_delete_user)
+        reg = w.registry_path(cfg)
+        loose = (reg.read_bytes(), Path(str(reg) + ".sig").read_bytes())
+        cfg = w.write(_tag("s26", profile), profile=profile)  # today's strict registry, a higher serial
     c = _smcp(w, cfg, w.report, [w.delegate(w.alice, w.report, ["sales_reporting", "crm_read"])])
     before = c.call("delete_user", {"userId": "u-55"})
     w.edit_registry(cfg, _loosen_delete_user, sign=False)
@@ -776,9 +783,18 @@ def configuration_drift(w: World, profile: str) -> Result:
     attacker = generate_key()
     fake.update(sha256=hashlib.sha256(path.read_bytes()).hexdigest(), signerKey=public_b64(attacker))
     Path(str(path) + ".sig").write_text(json.dumps({**fake, "signature": sign(attacker, fake)}))
-    r = c.call("delete_user", {"userId": "u-57"})
-    variants = [_variant("re-sign the edit with the attacker's own key", True, *_expect_denial(r))]
-    w.sign(path)  # governance signs the same edit: now it is a reviewed change, and it goes live
+    def attempt(attack: str) -> dict:
+        r = c.call("delete_user", {"userId": "u-57"})
+        outcome, evidence = _expect_denial(r)
+        why = _events(w, cfg, "CONFIG_REJECTED")[-1]["reason"]
+        return _variant(attack, True, outcome, f"rejected ({why}); the call stays denied" if outcome == "blocked"
+                        else evidence)
+    variants = [attempt("re-sign the edit with the attacker's own key")]
+    path.write_bytes(loose[0])  # put back the older looser registry with its genuine signature
+    Path(str(path) + ".sig").write_bytes(loose[1])
+    variants.append(attempt("roll back to an older registry that governance did sign"))
+    w.edit_registry(cfg, _loosen_delete_user, sign=False)
+    w.sign(path, serial=100)  # governance signs the same edit: now it is a reviewed change, and it goes live
     signed = c.call("delete_user", {"userId": "u-58"})
     c.close()
     return _grade(outcome, f"the unsigned edit was rejected and the signed registry stayed in force "
@@ -829,7 +845,7 @@ def audit_tampering(w: World, profile: str) -> dict:
     c.call("delete_user", {"userId": "u-1"})
     c.close()
     path = w.audit_path(cfg)
-    keys = {e.id: e.public_key for e in w.registry(cfg).entities.values() if e.public_key}
+    keys = w.registry(cfg).gateway_keys()
     checkpoint = json.loads(cp_path.read_text()) if cp_path else None
     lines = path.read_text().splitlines()
     clean = verify_log(path, keys, checkpoint)

@@ -40,6 +40,32 @@ class GuardConfigError(ValueError):
     pass
 
 
+def ecma_pattern(pattern: str) -> str:
+    """Translate a JSON Schema (ECMA-262) pattern for Python's ``re``.
+
+    The one difference that matters for a guard: in Python ``$`` also matches
+    just before a final newline, so ``^[a-z]+$`` would accept ``"report\\n"``.
+    In ECMA-262 it matches only at the end. Each unescaped ``$`` outside a
+    character class becomes ``\\Z``.
+    """
+    out, i, in_class = [], 0, False
+    while i < len(pattern):
+        c = pattern[i]
+        if c == "\\" and i + 1 < len(pattern):
+            out.append(pattern[i:i + 2])
+            i += 2
+            continue
+        if c == "[" and not in_class:
+            in_class = True
+        elif c == "]" and in_class:
+            in_class = False
+        elif c == "$" and not in_class:
+            c = "\\Z"
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def validate(value: object, schema: object, where: str = "arguments") -> list[str]:
     """Check ``value`` against a JSON Schema subset.
 
@@ -71,7 +97,7 @@ def validate(value: object, schema: object, where: str = "arguments") -> list[st
             out.append(f"{where} is shorter than {schema['minLength']} characters")
         if "maxLength" in schema and len(value) > schema["maxLength"]:
             out.append(f"{where} is longer than {schema['maxLength']} characters")
-        if "pattern" in schema and not re.search(schema["pattern"], value):
+        if "pattern" in schema and not re.search(ecma_pattern(schema["pattern"]), value):
             out.append(f"{where} {_short(value)} does not match the allowed pattern {schema['pattern']}")
 
     if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -158,16 +184,26 @@ def _host_allowed(host: str, allowed: list[str]) -> bool:
     return False
 
 
+_URL_CHARS = re.compile(r"^[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+$")
+
+
 def check_url(value: object, hosts: list[str]) -> str | None:
+    """The URL must be http(s), on an allowed host, and plain enough that every
+    parser agrees on the host: no backslashes, spaces or control characters
+    (Python and Node split ``http://a\\@b/`` differently), and no user info."""
     if not isinstance(value, str):
         return "must be a string URL"
+    if not _URL_CHARS.match(value):
+        return f"{_short(value)} contains characters that parsers disagree on"
     try:
-        parts = urlsplit(value.strip())
+        parts = urlsplit(value)
         host = parts.hostname or ""
     except ValueError:
         return f"{_short(value)} is not a valid URL"
     if parts.scheme not in ("http", "https"):
         return f"{_short(value)} is not an http(s) URL"
+    if "@" in parts.netloc:
+        return f"{_short(value)} carries user info before the host"
     if not host or not _host_allowed(host, hosts):
         return f"host {host or '(none)'} is not an allowed destination {hosts}"
     return None
@@ -216,7 +252,7 @@ def _check_patterns(schema: object, where: str) -> None:
     if isinstance(schema, dict):
         if "pattern" in schema:
             try:
-                re.compile(schema["pattern"])
+                re.compile(ecma_pattern(schema["pattern"]))
             except re.error as e:
                 raise GuardConfigError(f"{where}: bad pattern {schema['pattern']!r}: {e}") from None
         for v in schema.values():
