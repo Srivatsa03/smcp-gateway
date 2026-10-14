@@ -1,0 +1,1340 @@
+[
+ {
+  "package": "@modelcontextprotocol/server-everything",
+  "serverInfo": {
+   "name": "mcp-servers/everything",
+   "title": "Everything Reference Server",
+   "version": "1.0.0"
+  },
+  "tools": [
+   {
+    "name": "echo",
+    "description": "Echoes back the input string",
+    "inputSchema": {
+     "$schema": "http://json-schema.org/draft-07/schema#",
+     "type": "object",
+     "properties": {
+      "message": {
+       "type": "string",
+       "description": "Message to echo"
+      }
+     },
+     "required": [
+      "message"
+     ]
+    }
+   },
+   {
+    "name": "get-annotated-message",
+    "description": "Demonstrates how annotations can be used to provide metadata about content.",
+    "inputSchema": {
+     "$schema": "http://json-schema.org/draft-07/schema#",
+     "type": "object",
+     "properties": {
+      "messageType": {
+       "type": "string",
+       "enum": [
+        "error",
+        "success",
+        "debug"
+       ],
+       "description": "Type of message to demonstrate different annotation patterns"
+      },
+      "includeImage": {
+       "default": false,
+       "description": "Whether to include an example image",
+       "type": "boolean"
+      }
+     },
+     "required": [
+      "messageType"
+     ]
+    }
+   },
+   {
+    "name": "get-env",
+    "description": "Returns all environment variables, helpful for debugging MCP server configuration",
+    "inputSchema": {
+     "$schema": "http://json-schema.org/draft-07/schema#",
+     "type": "object",
+     "properties": {}
+    }
+   },
+   {
+    "name": "get-resource-links",
+    "description": "Returns up to ten resource links that reference different types of resources",
+    "inputSchema": {
+     "$schema": "http://json-schema.org/draft-07/schema#",
+     "type": "object",
+     "properties": {
+      "count": {
+       "default": 3,
+       "description": "Number of resource links to return (1-10)",
+       "type": "number",
+       "minimum": 1,
+       "maximum": 10
+      }
+     }
+    }
+   },
+   {
+    "name": "get-resource-reference",
+    "description": "Returns a resource reference that can be used by MCP clients",
+    "inputSchema": {
+     "$schema": "http://json-schema.org/draft-07/schema#",
+     "type": "object",
+     "properties": {
+      "resourceType": {
+       "default": "Text",
+       "type": "string",
+       "enum": [
+        "Text",
+        "Blob"
+       ]
+      },
+      "resourceId": {
+       "default": 1,
+       "description": "ID of the text resource to fetch",
+       "type": "number"
+      }
+     }
+    }
+   },
+   {
+    "name": "get-structured-content",
+    "description": "Returns structured content along with an output schema for client data validation",
+    "inputSchema": {
+     "$schema": "http://json-schema.org/draft-07/schema#",
+     "type": "object",
+     "properties": {
+      "location": {
+       "type": "string",
+       "enum": [
+        "New York",
+        "Chicago",
+        "Los Angeles"
+       ],
+       "description": "Choose city"
+      }
+     },
+     "required": [
+      "location"
+     ]
+    }
+   },
+   {
+    "name": "get-sum",
+    "description": "Returns the sum of two numbers",
+    "inputSchema": {
+     "$schema": "http://json-schema.org/draft-07/schema#",
+     "type": "object",
+     "properties": {
+      "a": {
+       "type": "number",
+       "description": "First number"
+      },
+      "b": {
+       "type": "number",
+       "description": "Second number"
+      }
+     },
+     "required": [
+      "a",
+      "b"
+     ]
+    }
+   },
+   {
+    "name": "get-tiny-image",
+    "description": "Returns a tiny MCP logo image.",
+    "inputSchema": {
+     "$schema": "http://json-schema.org/draft-07/schema#",
+     "type": "object",
+     "properties": {}
+    }
+   },
+   {
+    "name": "gzip-file-as-resource",
+    "description": "Compresses a single file using gzip compression. Depending upon the selected output type, returns either the compressed data as a gzipped resource or a resource link, allowing it to be downloaded in a subsequent request during the current session.",
+    "inputSchema": {
+     "$schema": "http://json-schema.org/draft-07/schema#",
+     "type": "object",
+     "properties": {
+      "name": {
+       "default": "README.md.gz",
+       "type": "string",
+       "description": "Name of the output file"
+      },
+      "data": {
+       "default": "https://raw.githubusercontent.com/modelcontextprotocol/servers/refs/heads/main/README.md",
+       "type": "string",
+       "format": "uri",
+       "description": "URL or data URI of the file content to compress"
+      },
+      "outputType": {
+       "default": "resourceLink",
+       "description": "How the resulting gzipped file should be returned. 'resourceLink' returns a link to a resource that can be read later, 'resource' returns a full resource object.",
+       "type": "string",
+       "enum": [
+        "resourceLink",
+        "resource"
+       ]
+      }
+     }
+    }
+   },
+   {
+    "name": "toggle-simulated-logging",
+    "description": "Toggles simulated, random-leveled logging on or off.",
+    "inputSchema": {
+     "$schema": "http://json-schema.org/draft-07/schema#",
+     "type": "object",
+     "properties": {}
+    }
+   },
+   {
+    "name": "toggle-subscriber-updates",
+    "description": "Toggles simulated resource subscription updates on or off.",
+    "inputSchema": {
+     "$schema": "http://json-schema.org/draft-07/schema#",
+     "type": "object",
+     "properties": {}
+    }
+   },
+   {
+    "name": "trigger-long-running-operation",
+    "description": "Demonstrates a long running operation with progress updates.",
+    "inputSchema": {
+     "$schema": "http://json-schema.org/draft-07/schema#",
+     "type": "object",
+     "properties": {
+      "duration": {
+       "default": 10,
+       "description": "Duration of the operation in seconds",
+       "type": "number"
+      },
+      "steps": {
+       "default": 5,
+       "description": "Number of steps in the operation",
+       "type": "number"
+      }
+     }
+    }
+   },
+   {
+    "name": "simulate-research-query",
+    "description": "Simulates a deep research operation that gathers, analyzes, and synthesizes information. Demonstrates MCP task-based operations with progress through multiple stages. If 'ambiguous' is true and client supports elicitation, sends an elicitation request for clarification.",
+    "inputSchema": {
+     "$schema": "http://json-schema.org/draft-07/schema#",
+     "type": "object",
+     "properties": {
+      "topic": {
+       "type": "string",
+       "description": "The research topic to investigate"
+      },
+      "ambiguous": {
+       "default": false,
+       "description": "Simulate an ambiguous query that requires clarification (triggers input_required status)",
+       "type": "boolean"
+      }
+     },
+     "required": [
+      "topic"
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "package": "@modelcontextprotocol/server-filesystem",
+  "serverInfo": {
+   "name": "secure-filesystem-server",
+   "version": "1.0.0"
+  },
+  "tools": [
+   {
+    "name": "read_file",
+    "description": "Read the complete contents of a file as text. DEPRECATED: Use read_text_file instead.",
+    "inputSchema": {
+     "$schema": "https://json-schema.org/draft/2020-12/schema",
+     "type": "object",
+     "properties": {
+      "path": {
+       "type": "string"
+      },
+      "tail": {
+       "description": "If provided, returns only the last N lines of the file",
+       "type": "number"
+      },
+      "head": {
+       "description": "If provided, returns only the first N lines of the file",
+       "type": "number"
+      }
+     },
+     "required": [
+      "path"
+     ]
+    }
+   },
+   {
+    "name": "read_text_file",
+    "description": "Read the complete contents of a file from the file system as text. Handles various text encodings and provides detailed error messages if the file cannot be read. Use this tool when you need to examine the contents of a single file. Use the 'head' parameter to read only the first N lines of a file, or the 'tail' parameter to read only the last N lines of a file. Operates on the file as text regardless of extension. Only works within allowed directories.",
+    "inputSchema": {
+     "$schema": "https://json-schema.org/draft/2020-12/schema",
+     "type": "object",
+     "properties": {
+      "path": {
+       "type": "string"
+      },
+      "tail": {
+       "description": "If provided, returns only the last N lines of the file",
+       "type": "number"
+      },
+      "head": {
+       "description": "If provided, returns only the first N lines of the file",
+       "type": "number"
+      }
+     },
+     "required": [
+      "path"
+     ]
+    }
+   },
+   {
+    "name": "read_media_file",
+    "description": "Read a file and return it as a base64-encoded content block with its MIME type. Image and audio files are returned as image/audio content; any other file type is returned as an embedded resource. Only works within allowed directories.",
+    "inputSchema": {
+     "$schema": "https://json-schema.org/draft/2020-12/schema",
+     "type": "object",
+     "properties": {
+      "path": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "path"
+     ]
+    }
+   },
+   {
+    "name": "read_multiple_files",
+    "description": "Read the contents of multiple files simultaneously. This is more efficient than reading files one by one when you need to analyze or compare multiple files. Each file's content is returned with its path as a reference. Failed reads for individual files won't stop the entire operation. Only works within allowed directories.",
+    "inputSchema": {
+     "$schema": "https://json-schema.org/draft/2020-12/schema",
+     "type": "object",
+     "properties": {
+      "paths": {
+       "minItems": 1,
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "Array of file paths to read. Each path must be a string pointing to a valid file within allowed directories."
+      }
+     },
+     "required": [
+      "paths"
+     ]
+    }
+   },
+   {
+    "name": "write_file",
+    "description": "Create a new file or completely overwrite an existing file with new content. Use with caution as it will overwrite existing files without warning. Handles text content with proper encoding. Only works within allowed directories.",
+    "inputSchema": {
+     "$schema": "https://json-schema.org/draft/2020-12/schema",
+     "type": "object",
+     "properties": {
+      "path": {
+       "type": "string"
+      },
+      "content": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "path",
+      "content"
+     ]
+    }
+   },
+   {
+    "name": "edit_file",
+    "description": "Make line-based edits to a text file. Each edit replaces exact line sequences with new content. Returns a git-style diff showing the changes made. Only works within allowed directories.",
+    "inputSchema": {
+     "$schema": "https://json-schema.org/draft/2020-12/schema",
+     "type": "object",
+     "properties": {
+      "path": {
+       "type": "string"
+      },
+      "edits": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "properties": {
+         "oldText": {
+          "type": "string",
+          "description": "Text to search for - must match exactly"
+         },
+         "newText": {
+          "type": "string",
+          "description": "Text to replace with"
+         }
+        },
+        "required": [
+         "oldText",
+         "newText"
+        ]
+       }
+      },
+      "dryRun": {
+       "default": false,
+       "description": "Preview changes using git-style diff format",
+       "type": "boolean"
+      }
+     },
+     "required": [
+      "path",
+      "edits"
+     ]
+    }
+   },
+   {
+    "name": "create_directory",
+    "description": "Create a new directory or ensure a directory exists. Can create multiple nested directories in one operation. If the directory already exists, this operation will succeed silently. Perfect for setting up directory structures for projects or ensuring required paths exist. Only works within allowed directories.",
+    "inputSchema": {
+     "$schema": "https://json-schema.org/draft/2020-12/schema",
+     "type": "object",
+     "properties": {
+      "path": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "path"
+     ]
+    }
+   },
+   {
+    "name": "list_directory",
+    "description": "Get a detailed listing of all files and directories in a specified path. Results clearly distinguish between files and directories with [FILE] and [DIR] prefixes. This tool is essential for understanding directory structure and finding specific files within a directory. Only works within allowed directories.",
+    "inputSchema": {
+     "$schema": "https://json-schema.org/draft/2020-12/schema",
+     "type": "object",
+     "properties": {
+      "path": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "path"
+     ]
+    }
+   },
+   {
+    "name": "list_directory_with_sizes",
+    "description": "Get a detailed listing of all files and directories in a specified path, including sizes. Results clearly distinguish between files and directories with [FILE] and [DIR] prefixes. This tool is useful for understanding directory structure and finding specific files within a directory. Only works within allowed directories.",
+    "inputSchema": {
+     "$schema": "https://json-schema.org/draft/2020-12/schema",
+     "type": "object",
+     "properties": {
+      "path": {
+       "type": "string"
+      },
+      "sortBy": {
+       "default": "name",
+       "description": "Sort entries by name or size",
+       "type": "string",
+       "enum": [
+        "name",
+        "size"
+       ]
+      }
+     },
+     "required": [
+      "path"
+     ]
+    }
+   },
+   {
+    "name": "directory_tree",
+    "description": "Get a recursive tree view of files and directories as a JSON structure. Each entry includes 'name', 'type' (file/directory), and 'children' for directories. Files have no children array, while directories always have a children array (which may be empty). The output is formatted with 2-space indentation for readability. Only works within allowed directories.",
+    "inputSchema": {
+     "$schema": "https://json-schema.org/draft/2020-12/schema",
+     "type": "object",
+     "properties": {
+      "path": {
+       "type": "string"
+      },
+      "excludePatterns": {
+       "default": [],
+       "type": "array",
+       "items": {
+        "type": "string"
+       }
+      }
+     },
+     "required": [
+      "path"
+     ]
+    }
+   },
+   {
+    "name": "move_file",
+    "description": "Move or rename files and directories. Can move files between directories and rename them in a single operation. If the destination exists, the operation will fail. Works across different directories and can be used for simple renaming within the same directory. Both source and destination must be within allowed directories.",
+    "inputSchema": {
+     "$schema": "https://json-schema.org/draft/2020-12/schema",
+     "type": "object",
+     "properties": {
+      "source": {
+       "type": "string"
+      },
+      "destination": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "source",
+      "destination"
+     ]
+    }
+   },
+   {
+    "name": "search_files",
+    "description": "Recursively search for files and directories matching a pattern. The patterns should be glob-style patterns that match paths relative to the working directory. Use pattern like '*.ext' to match files in current directory, and '**/*.ext' to match files in all subdirectories. Returns full paths to all matching items. Great for finding files when you don't know their exact location. Only searches within allowed directories.",
+    "inputSchema": {
+     "$schema": "https://json-schema.org/draft/2020-12/schema",
+     "type": "object",
+     "properties": {
+      "path": {
+       "type": "string"
+      },
+      "pattern": {
+       "type": "string"
+      },
+      "excludePatterns": {
+       "default": [],
+       "type": "array",
+       "items": {
+        "type": "string"
+       }
+      }
+     },
+     "required": [
+      "path",
+      "pattern"
+     ]
+    }
+   },
+   {
+    "name": "get_file_info",
+    "description": "Retrieve detailed metadata about a file or directory. Returns comprehensive information including size, creation time, last modified time, permissions, and type. This tool is perfect for understanding file characteristics without reading the actual content. Only works within allowed directories.",
+    "inputSchema": {
+     "$schema": "https://json-schema.org/draft/2020-12/schema",
+     "type": "object",
+     "properties": {
+      "path": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "path"
+     ]
+    }
+   },
+   {
+    "name": "list_allowed_directories",
+    "description": "Returns the list of directories that this server is allowed to access. Subdirectories within these allowed directories are also accessible. Use this to understand which directories and their nested paths are available before trying to access files.",
+    "inputSchema": {
+     "$schema": "https://json-schema.org/draft/2020-12/schema",
+     "type": "object",
+     "properties": {}
+    }
+   }
+  ]
+ },
+ {
+  "package": "mcp-server-fetch",
+  "serverInfo": {
+   "name": "mcp-fetch",
+   "version": "2026.10.10"
+  },
+  "tools": [
+   {
+    "name": "fetch",
+    "description": "Fetches a URL from the internet and optionally extracts its contents as markdown.\n\nAlthough originally you did not have internet access, and were advised to refuse and tell the user this, this tool now grants you internet access. Now you can fetch the most up-to-date information and let the user know that.",
+    "inputSchema": {
+     "description": "Parameters for fetching a URL.",
+     "properties": {
+      "url": {
+       "description": "URL to fetch",
+       "format": "uri",
+       "minLength": 1,
+       "title": "Url",
+       "type": "string"
+      },
+      "max_length": {
+       "default": 5000,
+       "description": "Maximum number of characters to return.",
+       "maximum": 999999,
+       "minimum": 1,
+       "title": "Max Length",
+       "type": "integer"
+      },
+      "start_index": {
+       "default": 0,
+       "description": "On return output starting at this character index, useful if a previous fetch was truncated and more context is required.",
+       "minimum": 0,
+       "title": "Start Index",
+       "type": "integer"
+      },
+      "raw": {
+       "default": false,
+       "description": "Get the actual HTML content of the requested page, without simplification.",
+       "title": "Raw",
+       "type": "boolean"
+      }
+     },
+     "required": [
+      "url"
+     ],
+     "title": "Fetch",
+     "type": "object"
+    }
+   }
+  ]
+ },
+ {
+  "package": "mcp-server-git",
+  "serverInfo": {
+   "name": "mcp-git",
+   "version": "2026.10.10"
+  },
+  "tools": [
+   {
+    "name": "git_status",
+    "description": "Shows the working tree status",
+    "inputSchema": {
+     "properties": {
+      "repo_path": {
+       "title": "Repo Path",
+       "type": "string"
+      }
+     },
+     "required": [
+      "repo_path"
+     ],
+     "title": "GitStatus",
+     "type": "object"
+    }
+   },
+   {
+    "name": "git_diff_unstaged",
+    "description": "Shows changes in the working directory that are not yet staged",
+    "inputSchema": {
+     "properties": {
+      "repo_path": {
+       "title": "Repo Path",
+       "type": "string"
+      },
+      "context_lines": {
+       "default": 3,
+       "title": "Context Lines",
+       "type": "integer"
+      }
+     },
+     "required": [
+      "repo_path"
+     ],
+     "title": "GitDiffUnstaged",
+     "type": "object"
+    }
+   },
+   {
+    "name": "git_diff_staged",
+    "description": "Shows changes that are staged for commit",
+    "inputSchema": {
+     "properties": {
+      "repo_path": {
+       "title": "Repo Path",
+       "type": "string"
+      },
+      "context_lines": {
+       "default": 3,
+       "title": "Context Lines",
+       "type": "integer"
+      }
+     },
+     "required": [
+      "repo_path"
+     ],
+     "title": "GitDiffStaged",
+     "type": "object"
+    }
+   },
+   {
+    "name": "git_diff",
+    "description": "Shows differences between branches or commits",
+    "inputSchema": {
+     "properties": {
+      "repo_path": {
+       "title": "Repo Path",
+       "type": "string"
+      },
+      "target": {
+       "title": "Target",
+       "type": "string"
+      },
+      "context_lines": {
+       "default": 3,
+       "title": "Context Lines",
+       "type": "integer"
+      }
+     },
+     "required": [
+      "repo_path",
+      "target"
+     ],
+     "title": "GitDiff",
+     "type": "object"
+    }
+   },
+   {
+    "name": "git_commit",
+    "description": "Records changes to the repository",
+    "inputSchema": {
+     "properties": {
+      "repo_path": {
+       "title": "Repo Path",
+       "type": "string"
+      },
+      "message": {
+       "title": "Message",
+       "type": "string"
+      }
+     },
+     "required": [
+      "repo_path",
+      "message"
+     ],
+     "title": "GitCommit",
+     "type": "object"
+    }
+   },
+   {
+    "name": "git_add",
+    "description": "Adds file contents to the staging area",
+    "inputSchema": {
+     "properties": {
+      "repo_path": {
+       "title": "Repo Path",
+       "type": "string"
+      },
+      "files": {
+       "items": {
+        "type": "string"
+       },
+       "minItems": 1,
+       "title": "Files",
+       "type": "array"
+      }
+     },
+     "required": [
+      "repo_path",
+      "files"
+     ],
+     "title": "GitAdd",
+     "type": "object"
+    }
+   },
+   {
+    "name": "git_reset",
+    "description": "Unstages all staged changes",
+    "inputSchema": {
+     "properties": {
+      "repo_path": {
+       "title": "Repo Path",
+       "type": "string"
+      }
+     },
+     "required": [
+      "repo_path"
+     ],
+     "title": "GitReset",
+     "type": "object"
+    }
+   },
+   {
+    "name": "git_log",
+    "description": "Shows the commit logs",
+    "inputSchema": {
+     "properties": {
+      "repo_path": {
+       "title": "Repo Path",
+       "type": "string"
+      },
+      "max_count": {
+       "default": 10,
+       "title": "Max Count",
+       "type": "integer"
+      },
+      "start_timestamp": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "description": "Start timestamp for filtering commits. Accepts: ISO 8601 format (e.g., '2024-01-15T14:30:25'), relative dates (e.g., '2 weeks ago', 'yesterday'), or absolute dates (e.g., '2024-01-15', 'Jan 15 2024')",
+       "title": "Start Timestamp"
+      },
+      "end_timestamp": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "description": "End timestamp for filtering commits. Accepts: ISO 8601 format (e.g., '2024-01-15T14:30:25'), relative dates (e.g., '2 weeks ago', 'yesterday'), or absolute dates (e.g., '2024-01-15', 'Jan 15 2024')",
+       "title": "End Timestamp"
+      }
+     },
+     "required": [
+      "repo_path"
+     ],
+     "title": "GitLog",
+     "type": "object"
+    }
+   },
+   {
+    "name": "git_create_branch",
+    "description": "Creates a new branch from an optional base branch",
+    "inputSchema": {
+     "properties": {
+      "repo_path": {
+       "title": "Repo Path",
+       "type": "string"
+      },
+      "branch_name": {
+       "title": "Branch Name",
+       "type": "string"
+      },
+      "base_branch": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "title": "Base Branch"
+      }
+     },
+     "required": [
+      "repo_path",
+      "branch_name"
+     ],
+     "title": "GitCreateBranch",
+     "type": "object"
+    }
+   },
+   {
+    "name": "git_checkout",
+    "description": "Switches branches",
+    "inputSchema": {
+     "properties": {
+      "repo_path": {
+       "title": "Repo Path",
+       "type": "string"
+      },
+      "branch_name": {
+       "title": "Branch Name",
+       "type": "string"
+      }
+     },
+     "required": [
+      "repo_path",
+      "branch_name"
+     ],
+     "title": "GitCheckout",
+     "type": "object"
+    }
+   },
+   {
+    "name": "git_show",
+    "description": "Shows the contents of a commit, or of a file or directory given as <revision>:<path>",
+    "inputSchema": {
+     "properties": {
+      "repo_path": {
+       "title": "Repo Path",
+       "type": "string"
+      },
+      "revision": {
+       "title": "Revision",
+       "type": "string"
+      }
+     },
+     "required": [
+      "repo_path",
+      "revision"
+     ],
+     "title": "GitShow",
+     "type": "object"
+    }
+   },
+   {
+    "name": "git_branch",
+    "description": "List Git branches",
+    "inputSchema": {
+     "properties": {
+      "repo_path": {
+       "description": "The path to the Git repository.",
+       "title": "Repo Path",
+       "type": "string"
+      },
+      "branch_type": {
+       "description": "Whether to list local branches ('local'), remote branches ('remote') or all branches('all').",
+       "title": "Branch Type",
+       "type": "string"
+      },
+      "contains": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "description": "The commit sha that branch should contain. Do not pass anything to this param if no commit sha is specified",
+       "title": "Contains"
+      },
+      "not_contains": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "description": "The commit sha that branch should NOT contain. Do not pass anything to this param if no commit sha is specified",
+       "title": "Not Contains"
+      }
+     },
+     "required": [
+      "repo_path",
+      "branch_type"
+     ],
+     "title": "GitBranch",
+     "type": "object"
+    }
+   }
+  ]
+ },
+ {
+  "package": "mcp-server-time",
+  "serverInfo": {
+   "name": "mcp-time",
+   "version": "2026.10.10"
+  },
+  "tools": [
+   {
+    "name": "get_current_time",
+    "description": "Get current time in a specific timezone",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "timezone": {
+       "type": "string",
+       "description": "IANA timezone name (e.g., 'America/New_York', 'Europe/London'). Use 'America/Chicago' as local timezone if no timezone provided by the user."
+      }
+     },
+     "required": [
+      "timezone"
+     ]
+    }
+   },
+   {
+    "name": "convert_time",
+    "description": "Convert time between timezones",
+    "inputSchema": {
+     "type": "object",
+     "properties": {
+      "source_timezone": {
+       "type": "string",
+       "description": "Source IANA timezone name (e.g., 'America/New_York', 'Europe/London'). Use 'America/Chicago' as local timezone if no source timezone provided by the user."
+      },
+      "time": {
+       "type": "string",
+       "description": "Time to convert in 24-hour format (HH:MM)"
+      },
+      "target_timezone": {
+       "type": "string",
+       "description": "Target IANA timezone name (e.g., 'Asia/Tokyo', 'America/San_Francisco'). Use 'America/Chicago' as local timezone if no target timezone provided by the user."
+      }
+     },
+     "required": [
+      "source_timezone",
+      "time",
+      "target_timezone"
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "package": "@modelcontextprotocol/server-memory",
+  "serverInfo": {
+   "name": "memory-server",
+   "version": "1.0.0"
+  },
+  "tools": [
+   {
+    "name": "create_entities",
+    "description": "Create multiple new entities in the knowledge graph. An entity whose name already exists, or repeats an earlier entity in the same call, is skipped and its observations are not added; the result lists the skipped names in `skipped`. Use add_observations to add observations to an existing entity.",
+    "inputSchema": {
+     "$schema": "http://json-schema.org/draft-07/schema#",
+     "type": "object",
+     "properties": {
+      "entities": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "properties": {
+         "name": {
+          "type": "string",
+          "description": "The name of the entity"
+         },
+         "entityType": {
+          "type": "string",
+          "description": "The type of the entity"
+         },
+         "observations": {
+          "type": "array",
+          "items": {
+           "type": "string"
+          },
+          "description": "An array of observation contents associated with the entity"
+         }
+        },
+        "required": [
+         "name",
+         "entityType",
+         "observations"
+        ]
+       }
+      }
+     },
+     "required": [
+      "entities"
+     ]
+    }
+   },
+   {
+    "name": "create_relations",
+    "description": "Create multiple new relations between entities in the knowledge graph. Relations should be in active voice",
+    "inputSchema": {
+     "$schema": "http://json-schema.org/draft-07/schema#",
+     "type": "object",
+     "properties": {
+      "relations": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "properties": {
+         "from": {
+          "type": "string",
+          "description": "The name of the entity where the relation starts"
+         },
+         "to": {
+          "type": "string",
+          "description": "The name of the entity where the relation ends"
+         },
+         "relationType": {
+          "type": "string",
+          "description": "The type of the relation"
+         }
+        },
+        "required": [
+         "from",
+         "to",
+         "relationType"
+        ]
+       }
+      }
+     },
+     "required": [
+      "relations"
+     ]
+    }
+   },
+   {
+    "name": "add_observations",
+    "description": "Add new observations to existing entities in the knowledge graph",
+    "inputSchema": {
+     "$schema": "http://json-schema.org/draft-07/schema#",
+     "type": "object",
+     "properties": {
+      "observations": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "properties": {
+         "entityName": {
+          "type": "string",
+          "description": "The name of the entity to add the observations to"
+         },
+         "contents": {
+          "type": "array",
+          "items": {
+           "type": "string"
+          },
+          "description": "An array of observation contents to add"
+         }
+        },
+        "required": [
+         "entityName",
+         "contents"
+        ]
+       }
+      }
+     },
+     "required": [
+      "observations"
+     ]
+    }
+   },
+   {
+    "name": "delete_entities",
+    "description": "Delete multiple entities and their associated relations from the knowledge graph",
+    "inputSchema": {
+     "$schema": "http://json-schema.org/draft-07/schema#",
+     "type": "object",
+     "properties": {
+      "entityNames": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "An array of entity names to delete"
+      }
+     },
+     "required": [
+      "entityNames"
+     ]
+    }
+   },
+   {
+    "name": "delete_observations",
+    "description": "Delete specific observations from entities in the knowledge graph",
+    "inputSchema": {
+     "$schema": "http://json-schema.org/draft-07/schema#",
+     "type": "object",
+     "properties": {
+      "deletions": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "properties": {
+         "entityName": {
+          "type": "string",
+          "description": "The name of the entity containing the observations"
+         },
+         "observations": {
+          "type": "array",
+          "items": {
+           "type": "string"
+          },
+          "description": "An array of observations to delete"
+         }
+        },
+        "required": [
+         "entityName",
+         "observations"
+        ]
+       }
+      }
+     },
+     "required": [
+      "deletions"
+     ]
+    }
+   },
+   {
+    "name": "delete_relations",
+    "description": "Delete multiple relations from the knowledge graph",
+    "inputSchema": {
+     "$schema": "http://json-schema.org/draft-07/schema#",
+     "type": "object",
+     "properties": {
+      "relations": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "properties": {
+         "from": {
+          "type": "string",
+          "description": "The name of the entity where the relation starts"
+         },
+         "to": {
+          "type": "string",
+          "description": "The name of the entity where the relation ends"
+         },
+         "relationType": {
+          "type": "string",
+          "description": "The type of the relation"
+         }
+        },
+        "required": [
+         "from",
+         "to",
+         "relationType"
+        ]
+       },
+       "description": "An array of relations to delete"
+      }
+     },
+     "required": [
+      "relations"
+     ]
+    }
+   },
+   {
+    "name": "read_graph",
+    "description": "Read the entire knowledge graph",
+    "inputSchema": {
+     "$schema": "http://json-schema.org/draft-07/schema#",
+     "type": "object",
+     "properties": {}
+    }
+   },
+   {
+    "name": "search_nodes",
+    "description": "Search for nodes in the knowledge graph based on a query",
+    "inputSchema": {
+     "$schema": "http://json-schema.org/draft-07/schema#",
+     "type": "object",
+     "properties": {
+      "query": {
+       "type": "string",
+       "maxLength": 2048,
+       "description": "The search query to match against entity names, types, and observation content"
+      }
+     },
+     "required": [
+      "query"
+     ]
+    }
+   },
+   {
+    "name": "open_nodes",
+    "description": "Open specific nodes in the knowledge graph by their names",
+    "inputSchema": {
+     "$schema": "http://json-schema.org/draft-07/schema#",
+     "type": "object",
+     "properties": {
+      "names": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "An array of entity names to retrieve"
+      }
+     },
+     "required": [
+      "names"
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "package": "@modelcontextprotocol/server-sequential-thinking",
+  "serverInfo": {
+   "name": "sequential-thinking-server",
+   "version": "1.0.0"
+  },
+  "tools": [
+   {
+    "name": "sequentialthinking",
+    "description": "A detailed tool for dynamic and reflective problem-solving through thoughts.\nThis tool helps analyze problems through a flexible thinking process that can adapt and evolve.\nEach thought can build on, question, or revise previous insights as understanding deepens.\n\nWhen to use this tool:\n- Breaking down complex problems into steps\n- Planning and design with room for revision\n- Analysis that might need course correction\n- Problems where the full scope might not be clear initially\n- Problems that require a multi-step solution\n- Tasks that need to maintain context over multiple steps\n- Situations where irrelevant information needs to be filtered out\n\nKey features:\n- You can adjust total_thoughts up or down as you progress\n- You can question or revise previous thoughts\n- You can add more thoughts even after reaching what seemed like the end\n- You can express uncertainty and explore alternative approaches\n- Not every thought needs to build linearly - you can branch or backtrack\n- Generates a solution hypothesis\n- Verifies the hypothesis based on the Chain of Thought steps\n- Repeats the process until satisfied\n- Provides a correct answer\n\nParameters explained:\n- thought: Your current thinking step, which can include:\n  * Regular analytical steps\n  * Revisions of previous thoughts\n  * Questions about previous decisions\n  * Realizations about needing more analysis\n  * Changes in approach\n  * Hypothesis generation\n  * Hypothesis verification\n- nextThoughtNeeded: True if you need more thinking, even if at what seemed like the end\n- thoughtNumber: Current number in sequence (can go beyond initial total if needed)\n- totalThoughts: Current estimate of thoughts needed (can be adjusted up/down)\n- isRevision: A boolean indicating if this thought revises previous thinking\n- revisesThought: If is_revision is true, which thought number is being reconsidered\n- branchFromThought: If branching, which thought number is the branching point\n- branchId: Identifier for the current branch (if any)\n- needsMoreThoughts: If reaching end but realizing more thoughts needed\n\nYou should:\n1. Start with an initial estimate of needed thoughts, but be ready to adjust\n2. Feel free to question or revise previous thoughts\n3. Don't hesitate to add more thoughts if needed, even at the \"end\"\n4. Express uncertainty when present\n5. Mark thoughts that revise previous thinking or branch into new paths\n6. Ignore information that is irrelevant to the current step\n7. Generate a solution hypothesis when appropriate\n8. Verify the hypothesis based on the Chain of Thought steps\n9. Repeat the process until satisfied with the solution\n10. Provide a single, ideally correct answer as the final output\n11. Only set nextThoughtNeeded to false when truly done and a satisfactory answer is reached",
+    "inputSchema": {
+     "$schema": "http://json-schema.org/draft-07/schema#",
+     "type": "object",
+     "properties": {
+      "thought": {
+       "type": "string",
+       "description": "Your current thinking step"
+      },
+      "nextThoughtNeeded": {
+       "description": "Whether another thought step is needed",
+       "type": [
+        "boolean",
+        "string"
+       ]
+      },
+      "thoughtNumber": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 9007199254740991,
+       "description": "Current thought number (numeric value, e.g., 1, 2, 3)"
+      },
+      "totalThoughts": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 9007199254740991,
+       "description": "Estimated total thoughts needed (numeric value, e.g., 5, 10)"
+      },
+      "isRevision": {
+       "description": "Whether this revises previous thinking",
+       "type": [
+        "boolean",
+        "string"
+       ]
+      },
+      "revisesThought": {
+       "description": "Which thought is being reconsidered",
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 9007199254740991
+      },
+      "branchFromThought": {
+       "description": "Branching point thought number",
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 9007199254740991
+      },
+      "branchId": {
+       "description": "Branch identifier",
+       "type": "string"
+      },
+      "needsMoreThoughts": {
+       "description": "If more thoughts are needed",
+       "type": [
+        "boolean",
+        "string"
+       ]
+      }
+     },
+     "required": [
+      "thought",
+      "nextThoughtNeeded",
+      "thoughtNumber",
+      "totalThoughts"
+     ]
+    }
+   }
+  ]
+ }
+]

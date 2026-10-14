@@ -10,11 +10,13 @@ from pathlib import Path
 import yaml
 
 from . import __version__
-from .audit import verify_log
+from .audit import AuditIntegrityError, verify_log
 from .context import issue_delegation
 from .crypto import generate_key, load_key, public_b64, save_key
 from .identity import ENTITY_TYPES, make_id, parse_id
+from .launch import artifact_digest, sign_file
 from .registry import Registry, definition_hash
+from .scan import blocking, scan_tool
 
 
 def _split_command(argv: list[str]) -> tuple[list[str], list[str]]:
@@ -24,17 +26,37 @@ def _split_command(argv: list[str]) -> tuple[list[str], list[str]]:
     return argv, []
 
 
+def _deployment(config: str):
+    from .gateway import Deployment
+    try:
+        return Deployment.load(Path(config))
+    except (OSError, KeyError, ValueError, AuditIntegrityError) as e:
+        print(f"smcp-gateway: cannot start from {config}: {e}", file=sys.stderr)
+        return None
+
+
 def cmd_run(args, server_cmd: list[str]) -> int:
     from .gateway import Gateway, serve_stdio
     if not server_cmd:
         print("smcp-gateway run: give the MCP server command after --", file=sys.stderr)
         return 2
-    try:
-        gateway = Gateway.from_config(Path(args.config))
-    except (OSError, KeyError, ValueError) as e:
-        print(f"smcp-gateway: cannot start from {args.config}: {e!r}", file=sys.stderr)
+    deployment = _deployment(args.config)
+    if deployment is None:
         return 2
-    return serve_stdio(gateway, server_cmd)
+    return serve_stdio(Gateway(deployment), server_cmd)
+
+
+def cmd_serve(args, server_cmd: list[str]) -> int:
+    from .httpserve import serve_http
+    if not server_cmd:
+        print("smcp-gateway serve: give the MCP server command after --", file=sys.stderr)
+        return 2
+    deployment = _deployment(args.config)
+    if deployment is None:
+        return 2
+    return serve_http(deployment, server_cmd, host=args.host, port=args.port,
+                      allowed_origins=tuple(args.allow_origin or ()), max_sessions=args.max_sessions,
+                      verbose=args.verbose)
 
 
 def cmd_keygen(args, _) -> int:
@@ -70,50 +92,118 @@ def cmd_delegate(args, _) -> int:
     return 0
 
 
+def _list_tools(server_cmd: list[str], url: str | None):
+    from .client import MCPClient
+    with (MCPClient(url=url) if url else MCPClient(server_cmd)) as client:
+        version = (client.init_result or {}).get("serverInfo", {}).get("version")
+        return version, client.list_tools()
+
+
+def _print_findings(tools: list[dict]) -> int:
+    names = [t["name"] for t in tools]
+    flagged = 0
+    for t in tools:
+        findings = scan_tool(t, names)
+        if blocking(findings):
+            flagged += 1
+        for f in findings:
+            print(f"# {t['name']}: [{f.severity}] {f}", file=sys.stderr)
+    return flagged
+
+
 def cmd_pin(args, server_cmd: list[str]) -> int:
     """Print registry entries for every tool a server lists, with definition hashes."""
-    from .client import MCPClient
     if not server_cmd:
         print("smcp-gateway pin: give the MCP server command after --", file=sys.stderr)
         return 2
-    with MCPClient(server_cmd) as client:
-        version = (client.init_result or {}).get("serverInfo", {}).get("version")
-        tools = client.list_tools()
+    version, tools = _list_tools(server_cmd, None)
     entry = {
         "id": args.server_id or "<T1 identity code of this server>",
         "serverVersion": version,
-        "tools": [{"name": t["name"], "toolId": t["name"], "definitionSha256": definition_hash(t),
-                   "security": {"sensitivityLevel": "internal", "minIdentityAssurance": "aal1"}}
-                  for t in tools],
     }
+    if args.artifact:
+        entry["artifactSha256"] = artifact_digest(Path(args.artifact))
+    entry["tools"] = [{"name": t["name"], "toolId": t["name"], "definitionSha256": definition_hash(t),
+                       "security": {"sensitivityLevel": "internal", "minIdentityAssurance": "aal1"}}
+                      for t in tools]
     print(yaml.safe_dump({"servers": [entry]}, sort_keys=False))
-    print(f"# pinned {len(tools)} tools. Review every description before you register them: "
-          "pinning a poisoned description makes it trusted.", file=sys.stderr)
+    flagged = _print_findings(tools)
+    print(f"# pinned {len(tools)} tools; the scanner flags {flagged}. Review every description before you "
+          "register them: pinning a poisoned description makes it trusted.", file=sys.stderr)
+    return 0
+
+
+def cmd_scan(args, server_cmd: list[str]) -> int:
+    """Scan a server's tool definitions for instruction-like text. Exit 1 if any is flagged."""
+    if not server_cmd and not args.file:
+        print("smcp-gateway scan: give the MCP server command after --, or --file tools.json", file=sys.stderr)
+        return 2
+    if args.file:
+        data = json.loads(Path(args.file).read_text())
+        tools = data["tools"] if isinstance(data, dict) else data
+    else:
+        _, tools = _list_tools(server_cmd, None)
+    flagged = _print_findings(tools)
+    print(f"{len(tools)} tools scanned, {flagged} flagged")
+    return 1 if flagged else 0
+
+
+def cmd_sign_config(args, _) -> int:
+    key = load_key(Path(args.key))
+    for f in args.files:
+        out = sign_file(Path(f), key, args.signer)
+        print(f"signed {f} -> {out}")
+    print(f"configSigner: {{id: {args.signer}, publicKey: {public_b64(key)}}}")
+    return 0
+
+
+def cmd_artifact(args, _) -> int:
+    print(artifact_digest(Path(args.path)))
     return 0
 
 
 def cmd_audit_verify(args, _) -> int:
-    registry = Registry.load(Path(args.registry))
-    keys = {e.id: e.public_key for e in registry.entities.values() if e.public_key}
-    result = verify_log(Path(args.path), keys)
+    try:
+        registry = Registry.load(Path(args.registry))
+        checkpoint = json.loads(Path(args.checkpoint).read_text()) if args.checkpoint else None
+        keys = {e.id: e.public_key for e in registry.entities.values() if e.public_key}
+        result = verify_log(Path(args.path), keys, checkpoint)
+    except (OSError, ValueError) as e:
+        print(f"smcp-gateway audit verify: {e}", file=sys.stderr)
+        return 2
     if result.ok:
-        print(f"ok: {result.entries} entries, hash chain and signatures verify")
+        extra = f", and the log holds all {checkpoint['count']} checkpointed entries" if checkpoint else ""
+        print(f"ok: {result.entries} entries, hash chain and signatures verify{extra}")
         return 0
-    print(f"TAMPERED at line {result.bad_line} (after {result.entries} good entries): {result.reason}")
+    where = f" at line {result.bad_line}" if result.bad_line else ""
+    print(f"TAMPERED{where} (after {result.entries} good entries): {result.reason}")
     return 1
+
+
+def cmd_audit_checkpoint(args, _) -> int:
+    """Print a signed checkpoint of a log's current head, to hand to a witness."""
+    deployment = _deployment(args.config)
+    if deployment is None:
+        return 2
+    print(json.dumps(deployment.audit.head(), indent=2))
+    return 0
 
 
 def cmd_init(args, _) -> int:
     from .bench.world import World
     world = World(Path(args.dir))
-    config = world.write("default", legacy={"bindAgent": world.report.id, "assurance": "aal1"}
-                         if args.legacy_bind else None)
-    print(f"wrote a demo deployment to {world.root}")
+    config = world.write("default", profile=args.profile,
+                         legacy={"bindAgent": world.report.id, "assurance": "aal1"} if args.legacy_bind else None)
+    print(f"wrote a demo deployment ({args.profile} profile) to {world.root}")
     print(f"  config:   {config}")
-    print(f"  registry: {config.parent / 'registry-default.yaml'}")
-    print(f"  policy:   {config.parent / 'policy.yaml'}")
+    print(f"  registry: {world.registry_path(config)}")
+    print(f"  policy:   {world.policy_path(config)}")
+    if args.profile == "extended":
+        print("  the registry and policy are signed; after an edit, re-sign them with:")
+        print(f"    smcp-gateway sign-config --key {world.root / 'keys' / 'governance.pem'} "
+              f"--signer {world.governance.id} {world.registry_path(config)} {world.policy_path(config)}")
     print("run it in front of the demo server:")
-    print(f"  smcp-gateway run -c {config} -- {' '.join(world.upstream_cmd())}")
+    print(f"  smcp-gateway run -c {config} -- {' '.join(world.server_cmd(config))}")
     return 0
 
 
@@ -131,6 +221,15 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("run", help="enforce SMCP in front of an MCP stdio server: run -c smcp.yaml -- CMD...")
     p.add_argument("-c", "--config", required=True)
     p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser("serve", help="serve the gateway over Streamable HTTP: serve -c smcp.yaml -- CMD...")
+    p.add_argument("-c", "--config", required=True)
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--allow-origin", action="append", help="an Origin header value to accept (repeatable)")
+    p.add_argument("--max-sessions", type=int, default=64)
+    p.add_argument("--verbose", action="store_true")
+    p.set_defaults(func=cmd_serve)
 
     p = sub.add_parser("keygen", help="write an Ed25519 private key (PEM) and print the public key")
     p.add_argument("out")
@@ -159,22 +258,43 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("pin", help="print registry entries with definition hashes: pin -- CMD...")
     p.add_argument("--server-id")
+    p.add_argument("--artifact", help="also pin the SHA-256 of this server file or directory")
     p.set_defaults(func=cmd_pin)
+
+    p = sub.add_parser("scan", help="scan tool definitions for instruction-like text: scan -- CMD...")
+    p.add_argument("--file", help="a JSON file with a tools list instead of a live server")
+    p.set_defaults(func=cmd_scan)
+
+    p = sub.add_parser("sign-config", help="sign registry or policy files for configSigner")
+    p.add_argument("--key", required=True, help="the governance private key")
+    p.add_argument("--signer", required=True, help="the signer's identity code")
+    p.add_argument("files", nargs="+")
+    p.set_defaults(func=cmd_sign_config)
+
+    p = sub.add_parser("artifact", help="print the SHA-256 of a server file or directory, for artifactSha256")
+    p.add_argument("path")
+    p.set_defaults(func=cmd_artifact)
 
     p = sub.add_parser("audit", help="audit log tools")
     asub = p.add_subparsers(dest="audit_command", required=True)
     q = asub.add_parser("verify")
     q.add_argument("path")
     q.add_argument("--registry", required=True)
+    q.add_argument("--checkpoint", help="a signed checkpoint; also detects a truncated log")
     q.set_defaults(func=cmd_audit_verify)
+    q = asub.add_parser("checkpoint", help="print a signed checkpoint of the log's current head")
+    q.add_argument("-c", "--config", required=True)
+    q.set_defaults(func=cmd_audit_checkpoint)
 
     p = sub.add_parser("init", help="write a demo deployment (keys, registry, policy, config)")
     p.add_argument("dir")
     p.add_argument("--legacy-bind", action="store_true",
                    help="let SMCP-unaware clients (e.g. Claude Code) through as the demo agent at aal1")
+    p.add_argument("--profile", choices=["paper", "extended"], default="paper",
+                   help="the paper's design, or with this project's extensions")
     p.set_defaults(func=cmd_init)
 
-    p = sub.add_parser("bench", help="run the attack bench against the paper's 26 MCP risks")
+    p = sub.add_parser("bench", help="run the attack bench (26 risks, both profiles) and the latency check")
     p.add_argument("--json")
     p.add_argument("--markdown")
     p.add_argument("--calls", type=int, default=300, help="calls per latency measurement")
