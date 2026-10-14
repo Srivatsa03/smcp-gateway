@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.3.0
+
+A real model in the agent's seat:
+
+- `smcp-gateway llm-bench` runs seven attacks that need a fooled model, plus two
+  normal tasks, with a real model as the agent: no gateway, the paper design,
+  and the extensions. Any OpenAI-compatible chat API with tool calling works;
+  Groq is the default. A simulated careful user answers approval requests.
+- Runs are scored by rules over the saved transcript: an attack succeeds only
+  if its goal happened in a call that ran. `--rescore` scores a saved report
+  again without calling a model.
+- The report is saved after every run. Trials run outermost, a daily quota
+  stops a model cleanly, and `--resume` finishes it later. Provider error text
+  loses the account's organization id before it is stored.
+- The bench server returns a fake SSH key for `~/.ssh/id_rsa` and
+  `~/.ssh/id_ed25519`, for the tool poisoning scenario.
+- Results for three open-weight models on Groq:
+  [docs/LLM_RESULTS.md](docs/LLM_RESULTS.md). Attack runs that reached the
+  attacker's goal: 39 of 90 with no gateway, 32 of 90 with the paper design,
+  0 of 90 with the extensions.
+
 ## 0.2.0
 
 Extensions beyond the paper, each off unless configured:

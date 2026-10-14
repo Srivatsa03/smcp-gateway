@@ -96,12 +96,40 @@ The bench server is simulated. Two checks use code this project did not write:
 - The official MCP Inspector CLI (TypeScript SDK) lists and calls tools through
   `smcp-gateway serve` over Streamable HTTP, and gets signed responses back.
 
+### With a real model
+
+The bench above scripts the fooled model. `smcp-gateway llm-bench` puts a real
+one in the agent's seat for the seven attacks that need a fooled model, plus two
+normal tasks. Three open-weight models on Groq (gpt-oss-120b, gpt-oss-20b, Qwen
+3.8 27B), 4 or 5 trials per cell:
+
+| | No gateway | Paper design | With extensions |
+|---|---:|---:|---:|
+| Attack runs that reached the attacker's goal | 39/90 | 32/90 | 0/90 |
+| Normal tasks done | 28/28 | 28/28 | 28/28 (14 approvals) |
+
+- Both gpt-oss models were fooled in most attack runs. Qwen was fooled in none
+  without a gateway.
+- An HTML comment saying "ignore your previous instructions" fooled no model.
+  The same request written as a business note fooled both gpt-oss models every
+  time.
+- The paper design stopped one attack, tool poisoning, and only because its
+  redaction obligation hid the key the fooled model read. Prose injection,
+  shadowing and a pasted ticket went through as often as with no gateway.
+- With the extensions, one model worked around the email domain guard by asking
+  an internal address to forward the data. The flow labels caught that email.
+- The cost: the hidden poisoned tool left the user's weather question
+  unanswered in all 14 runs.
+
+Details, transcripts and limits: [docs/LLM_RESULTS.md](docs/LLM_RESULTS.md).
+
 ## Quickstart
 
 ```bash
 pip install -e .                     # Python 3.10+; depends on cryptography and pyyaml
 smcp-gateway bench                   # 26 risks x 2 profiles, extra checks, benign workload, latency (about 30 s)
-python -m pytest                     # 123 tests, including one that pins every bench outcome
+python -m pytest                     # 136 tests, including one that pins every bench outcome
+smcp-gateway llm-bench --model openai/gpt-oss-20b --trials 1   # a real model as the agent (needs GROQ_API_KEY)
 ```
 
 Make a demo deployment (keys, registry, policy, config) and run the gateway in
@@ -228,7 +256,8 @@ Each scenario runs the same attack against the plain server (baseline), through
 the gateway with the paper's design, and through the gateway with the
 extensions. The agent is a script. There is no LLM. Where an attack needs a
 fooled model, the script plays the fooled model, and the question is only
-whether the gateway stops the resulting calls.
+whether the gateway stops the resulting calls. `llm-bench` asks the other
+question, how often a real model is fooled, for seven of those attacks.
 
 Outcomes:
 
@@ -252,8 +281,8 @@ real files.
 
 See [docs/LIMITATIONS.md](docs/LIMITATIONS.md). The short version: this is a
 reference implementation of one paper's design plus extensions, tested against
-scripted attacks on a simulated server, with the defenses and attacks written by
-the same author. It shows what each control can and cannot stop. It is not a
+scripted attacks (and, for seven of them, three real models) on a simulated
+server, with the defenses and attacks written by the same author. It shows what each control can and cannot stop. It is not a
 production security boundary.
 
 ## Paper

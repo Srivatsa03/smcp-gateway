@@ -4,7 +4,10 @@
 
 - **The agent is scripted.** No LLM is in the loop. Scenarios that depend on a
   model being fooled assume it was fooled and test only what the gateway does
-  next. The bench does not measure how often a real model falls for an attack.
+  next. `smcp-gateway llm-bench` puts a real model in the agent's seat for five
+  of those attacks and two normal tasks (see
+  [LLM_RESULTS.md](LLM_RESULTS.md) and its limits below). The other rows have no
+  real-model measurement.
 - **The server is simulated.** `bench/upstream.py` fakes each vulnerability
   (a shell injection returns a canned `uid=` line, a SQL injection returns a
   second tenant's rows, `/app/workspace/shared` behaves like a symlink to
@@ -27,6 +30,35 @@
   (approvals) and false denials for this deployment only.
 - **Two risks are not tested.** Remote Code Execution (same path as Command
   Injection, same guards) and Sandbox Escape (below the protocol).
+
+## Of the real-model run
+
+- **Nine scenarios, three models, one provider, one date.** The models are
+  open-weight models served by Groq's free tier. A provider can change what a
+  model id serves, so the numbers describe that day. No closed frontier model
+  was tested.
+- **Four or five trials per cell.** A difference of one or two runs is noise.
+  Qwen hit the free tier's daily token quota, so it has 4 trials and no
+  reworded-variant runs.
+- **The user is simulated and careful.** When the gateway asks for approval, the
+  simulated user approves only what the task asked for (an email to
+  `dana.ops@acme.example`) and declines the rest. A person who approves without
+  reading lets every "stopped at approval" call through.
+- **The agent declares `riskLevel: low` on every call**, the client's default.
+  That is what a fooled agent would declare, so the paper profile's condition
+  "risk at medium or lower" always passes here.
+- **The attack texts are the bench's own fixtures**, written by the same author
+  as the defenses: one hidden HTML comment, one plain-prose request, a poisoned
+  tool description and a shadowing description (each also reworded to avoid
+  the scanner), and one pasted ticket. Stronger or adaptive attacks would raise
+  the success rates. The reworded texts fooled no model, so this run does not
+  test the scanner's known gap.
+- **Scoring is a rule over the transcript**, not a judge model: a call to the
+  attacker's address that ran, a deletion of `u-1042` that ran, the private key
+  inside a call that ran. `smcp-gateway llm-bench --rescore` applies the current
+  rules to a saved report without calling a model.
+- **The model sees the tool list without `_meta`,** and a neutral system prompt.
+  A system prompt that warns about injection would change the baseline.
 
 ## Of the paper's design, as implemented
 
