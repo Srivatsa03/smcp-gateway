@@ -9,19 +9,24 @@ effect mid-session.
 Each registered tool pins a SHA-256 of its definition (name, description and
 input schema) taken at registration time. A server that later serves a different
 definition under the same name fails vetting. That is the rug-pull check.
+
+Extensions read from the same file (all optional): per-tool ``argumentGuards``,
+``flow`` labels, ``requiresApproval`` and ``acceptedFindings``; per-server
+``artifactSha256`` and ``allowServerRequests``; and a top-level
+``revokedDelegations`` list of delegation token ids.
 """
 
 from __future__ import annotations
 
-import os
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import yaml
-
+from . import guards as _guards
 from .crypto import digest
 from .identity import kind_of, parse_id
+from .scan import blocking, scan_tool
+from .watched import Verifier, WatchedFile
 
 STATUSES = ("active", "suspended", "revoked")
 
@@ -86,33 +91,18 @@ class RegistryError(ValueError):
     pass
 
 
-class Registry:
-    def __init__(self, data: dict, path: Path | None = None) -> None:
-        self.path = Path(path) if path else None
-        self._stamp = self._file_stamp()
+FLOW_LABELS = ("untrusted", "confidential")
+SERVER_REQUESTS_DEFAULT = ("roots/list", "ping")
+
+
+class Registry(WatchedFile):
+    def __init__(self, data: dict, path: Path | None = None, verifier: Verifier | None = None) -> None:
+        self._watch(path, verifier)
         self._load(data)
 
     @classmethod
-    def load(cls, path: Path) -> "Registry":
-        path = Path(path)
-        return cls(yaml.safe_load(path.read_text()) or {}, path)
-
-    def _file_stamp(self) -> tuple[int, int] | None:
-        if self.path is None:
-            return None
-        st = os.stat(self.path)
-        return (st.st_mtime_ns, st.st_size)
-
-    def reload_if_changed(self) -> bool:
-        """Re-read the file if it changed, so revocations apply to live sessions."""
-        if self.path is None:
-            return False
-        stamp = self._file_stamp()
-        if stamp == self._stamp:
-            return False
-        self._load(yaml.safe_load(self.path.read_text()) or {})
-        self._stamp = stamp
-        return True
+    def load(cls, path: Path, verifier: Verifier | None = None) -> "Registry":
+        return cls(cls.read(path, verifier), path, verifier)
 
     def _load(self, data: dict) -> None:
         entities: dict[str, Entity] = {}
@@ -145,6 +135,15 @@ class Registry:
             servers[sid] = {k: v for k, v in server.items() if k != "tools"}
             for t in server.get("tools") or []:
                 name = t["name"]
+                sec = t.get("security") or {}
+                if "argumentGuards" in sec:
+                    try:
+                        _guards.check_config(sec["argumentGuards"], f"tool {name}")
+                    except _guards.GuardConfigError as e:
+                        raise RegistryError(str(e)) from None
+                for label in (sec.get("flow") or {}).get("produces") or []:
+                    if label not in FLOW_LABELS:
+                        raise RegistryError(f"tool {name}: flow label {label!r} is not one of {FLOW_LABELS}")
                 tools[(sid, name)] = ToolRecord(
                     server_id=sid,
                     name=name,
@@ -158,6 +157,7 @@ class Registry:
         self.entities = entities
         self.tools = tools
         self.servers = servers
+        self.revoked_delegations = frozenset(str(x) for x in data.get("revokedDelegations") or [])
         self.fingerprint = digest(data)
 
     # --- lookups -------------------------------------------------------------
@@ -176,12 +176,20 @@ class Registry:
         e = self.entity(code)
         return e.label if e else str(code)
 
+    def server_requests(self, server_id: str) -> tuple[str, ...]:
+        """Server-to-client request methods this server may send (sampling is off by default)."""
+        allowed = (self.servers.get(server_id) or {}).get("allowServerRequests")
+        return tuple(allowed) if allowed is not None else SERVER_REQUESTS_DEFAULT
+
     # --- vetting -------------------------------------------------------------
 
-    def vet(self, server_id: str, tool: dict) -> tuple[ToolRecord | None, str | None]:
+    def vet(self, server_id: str, tool: dict, *, scan: bool = False) -> tuple[ToolRecord | None, str | None]:
         """Decide whether a tool a server advertises may be shown to the agent.
 
         Returns the registry record, or None plus the reason it was rejected.
+        With ``scan`` (an extension), a pinned definition that carries
+        instruction-like text is rejected too, unless the operator accepted
+        those finding kinds for this tool.
         """
         name = tool.get("name", "")
         record = self.tools.get((server_id, name))
@@ -197,6 +205,11 @@ class Registry:
         if record.definition_sha256 and definition_hash(tool) != record.definition_sha256:
             return None, (f"definition_changed: '{name}' no longer matches the definition "
                           f"pinned at registration (possible rug pull)")
+        if scan:
+            others = [n for (_, n) in self.tools if n != name]
+            hits = blocking(scan_tool(tool, others), record.security.get("acceptedFindings") or ())
+            if hits:
+                return None, f"suspicious_description: '{name}' carries " + "; ".join(str(h) for h in hits[:3])
         return record, None
 
     def _lookalike(self, name: str) -> str | None:
