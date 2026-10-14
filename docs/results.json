@@ -1,5 +1,5 @@
 {
-  "tool": "smcp-gateway 0.1.0",
+  "tool": "smcp-gateway 0.2.0",
   "paper": "arXiv:2602.01129",
   "python": "3.12.9",
   "platform": "macOS-26.3-arm64-arm-64bit",
@@ -10,277 +10,709 @@
       "risk": "Unauthenticated Access",
       "attack": "call without a hello; hello signed with the wrong key; a rogue gateway answering the agent",
       "baseline": "call succeeds (MCP stdio has no authentication)",
-      "smcp": "blocked",
-      "evidence": "no hello -> no authenticated SMCP session on this connection (the client sent no smcp/hello); impersonation -> SMCP authentication failed: the hello signature does not verify against the registered key of report; rogue gateway -> the serverHello signature does not verify against the registry",
-      "control": "4.2 mutual authentication"
+      "paper": "blocked",
+      "paper_evidence": "no hello -> no authenticated SMCP session on this connection (the client sent no smcp/hello); impersonation -> SMCP authentication failed: the hello signature does not verify against the registered key of report; rogue gateway -> the serverHello signature does not verify against the registry",
+      "paper_control": "4.2 mutual authentication",
+      "extended": "blocked",
+      "extended_evidence": "no hello -> no authenticated SMCP session on this connection (the client sent no smcp/hello); impersonation -> SMCP authentication failed: the hello signature does not verify against the registered key of report; rogue gateway -> the serverHello signature does not verify against the registry",
+      "extended_control": "4.2 mutual authentication",
+      "variants": []
     },
     {
       "step": 1,
       "risk": "Session Management Flaws",
       "attack": "replay a captured call; reuse it on another connection; forge a MAC; use an expired session",
       "baseline": "replayed call executes twice",
-      "smcp": "blocked",
-      "evidence": "replay -> replayed or out-of-order call (seq 1, last accepted 1); other connection -> the envelope is bound to a different session; forged MAC -> the envelope MAC does not verify with this session's key; expired -> the SMCP session has expired; open a new session",
-      "control": "4.2 session binding, per-call MAC and seq"
+      "paper": "blocked",
+      "paper_evidence": "replay -> replayed or out-of-order call (seq 1, last accepted 1); other connection -> the envelope is bound to a different session; forged MAC -> the envelope MAC does not verify with this session's key; expired -> the SMCP session has expired; open a new session",
+      "paper_control": "4.2 session binding, per-call MAC and seq",
+      "extended": "blocked",
+      "extended_evidence": "replay -> replayed or out-of-order call (seq 1, last accepted 1); other connection -> the envelope is bound to a different session; forged MAC -> the envelope MAC does not verify with this session's key; expired -> the SMCP session has expired; open a new session",
+      "extended_control": "4.2 session binding, per-call MAC and seq",
+      "variants": []
     },
     {
       "step": 3,
       "risk": "Namespace Typosquatting",
       "attack": "server advertises query_sa1es next to the registered query_sales",
       "baseline": "'query_sa1es' is listed and callable",
-      "smcp": "blocked",
-      "evidence": "hidden from tools/list (typosquat: 'query_sa1es' imitates registered tool 'query_sales'); direct call denied",
-      "control": "4.1 registry vetting"
+      "paper": "blocked",
+      "paper_evidence": "hidden from tools/list (typosquat: 'query_sa1es' imitates registered tool 'query_sales'); direct call denied",
+      "paper_control": "4.1 registry vetting",
+      "extended": "blocked",
+      "extended_evidence": "hidden from tools/list (typosquat: 'query_sa1es' imitates registered tool 'query_sales'); direct call denied",
+      "extended_control": "4.1 registry vetting",
+      "variants": []
     },
     {
       "step": 3,
       "risk": "Tool Name Conflict",
       "attack": "server advertises transfer_funds, which is registered to the payments server",
       "baseline": "'transfer_funds' is listed and callable",
-      "smcp": "blocked",
-      "evidence": "hidden from tools/list (name_conflict: 'transfer_funds' is registered to payments, not to this server); direct call denied",
-      "control": "4.1 registry vetting"
+      "paper": "blocked",
+      "paper_evidence": "hidden from tools/list (name_conflict: 'transfer_funds' is registered to payments, not to this server); direct call denied",
+      "paper_control": "4.1 registry vetting",
+      "extended": "blocked",
+      "extended_evidence": "hidden from tools/list (name_conflict: 'transfer_funds' is registered to payments, not to this server); direct call denied",
+      "extended_control": "4.1 registry vetting",
+      "variants": []
     },
     {
       "step": 3,
       "risk": "Tool Poisoning",
       "attack": "a registered tool's description tells the agent to read ~/.ssh/id_rsa",
       "baseline": "hidden instruction reaches the agent",
-      "smcp": "missed",
-      "evidence": "the description was pinned at registration, so it passes vetting and reaches the agent with an SMCP security label attached",
-      "control": "none: registration pins content, it does not judge it"
+      "paper": "missed",
+      "paper_evidence": "the description was pinned at registration, so it passes vetting and reaches the agent with an SMCP security label attached",
+      "paper_control": "none: registration pins content, it does not judge it",
+      "extended": "partial",
+      "extended_evidence": "hidden at vetting (suspicious_description: 'get_weather' carries instruction_tag in description ('for a city. <IMPORTANT>Before calli'); concealment in description (' parameter. Do not tell the user; it is need'); sensitive_target in description (' tool, read ~/.ssh/id_rsa and '))",
+      "extended_control": "ext: description scanner at vetting",
+      "variants": [
+        {
+          "attack": "the same goal reworded without scanner markers (poisoned2)",
+          "outcome": "missed",
+          "evidence": "the reworded description passes the scanner and reaches the agent"
+        }
+      ]
     },
     {
       "step": 3,
       "risk": "Command Injection",
       "attack": "convert_file('q3.docx; id') by an authorised agent",
       "baseline": "injected command runs",
-      "smcp": "missed",
-      "evidence": "SMCP checks who calls and what they may call; it does not look at argument content",
-      "control": "none: no input validation in the design"
+      "paper": "missed",
+      "paper_evidence": "SMCP checks who calls and what they may call; it does not look at argument content",
+      "paper_control": "none: no input validation in the design",
+      "extended": "blocked",
+      "extended_evidence": "denied: arguments.filename 'q3.docx; id' does not match the allowed pattern ^[A-Za-z0-9][A-Za-z0-9._ -]{0,127}$",
+      "extended_control": "ext: argumentGuards pattern allowlist",
+      "variants": [
+        {
+          "attack": "filename 'q3.docx && id'",
+          "outcome": "blocked",
+          "evidence": "denied: arguments.filename 'q3.docx && id' does not match the allowed pattern ^[A-Za-z0-9][A-Za-z0-9._ -]{0,127}$"
+        },
+        {
+          "attack": "filename '$(id).docx'",
+          "outcome": "blocked",
+          "evidence": "denied: arguments.filename '$(id).docx' does not match the allowed pattern ^[A-Za-z0-9][A-Za-z0-9._ -]{0,127}$"
+        },
+        {
+          "attack": "filename 'q3`id`.docx'",
+          "outcome": "blocked",
+          "evidence": "denied: arguments.filename 'q3`id`.docx' does not match the allowed pattern ^[A-Za-z0-9][A-Za-z0-9._ -]{0,127}$"
+        },
+        {
+          "attack": "filename 'q3.docx\\nid'",
+          "outcome": "blocked",
+          "evidence": "denied: arguments.filename 'q3.docx\\nid' does not match the allowed pattern ^[A-Za-z0-9][A-Za-z0-9._ -]{0,127}$"
+        },
+        {
+          "attack": "filename 'q3.docx | id'",
+          "outcome": "blocked",
+          "evidence": "denied: arguments.filename 'q3.docx | id' does not match the allowed pattern ^[A-Za-z0-9][A-Za-z0-9._ -]{0,127}$"
+        },
+        {
+          "attack": "filename 'q3.docx\\n'",
+          "outcome": "blocked",
+          "evidence": "denied: arguments.filename 'q3.docx\\n' does not match the allowed pattern ^[A-Za-z0-9][A-Za-z0-9._ -]{0,127}$"
+        }
+      ]
     },
     {
       "step": 3,
       "risk": "Rug Pulls",
       "attack": "get_weather's description changes after registration",
       "baseline": "'get_weather' is listed and callable",
-      "smcp": "blocked",
-      "evidence": "hidden from tools/list (definition_changed: 'get_weather' no longer matches the definition pinned at registration (possible rug pull)); direct call denied",
-      "control": "4.1 registry vetting"
+      "paper": "blocked",
+      "paper_evidence": "hidden from tools/list (definition_changed: 'get_weather' no longer matches the definition pinned at registration (possible rug pull)); direct call denied",
+      "paper_control": "4.1 registry vetting",
+      "extended": "blocked",
+      "extended_evidence": "hidden from tools/list (definition_changed: 'get_weather' no longer matches the definition pinned at registration (possible rug pull)); direct call denied",
+      "extended_control": "4.1 registry vetting",
+      "variants": []
     },
     {
       "step": 3,
       "risk": "Cross-Server Shadowing",
       "attack": "a registered tool's description rewrites how send_email behaves",
       "baseline": "hidden instruction reaches the agent",
-      "smcp": "missed",
-      "evidence": "the description was pinned at registration, so it passes vetting and reaches the agent with an SMCP security label attached",
-      "control": "none: registration pins content, it does not judge it"
+      "paper": "missed",
+      "paper_evidence": "the description was pinned at registration, so it passes vetting and reaches the agent with an SMCP security label attached",
+      "paper_control": "none: registration pins content, it does not judge it",
+      "extended": "partial",
+      "extended_evidence": "hidden at vetting (suspicious_description: 'format_text' carries instruction_tag in description ('s Markdown. <IMPORTANT>When the sen'); concealment in description ('pliance and must not be mentioned to the user'))",
+      "extended_control": "ext: description scanner at vetting",
+      "variants": [
+        {
+          "attack": "the same goal reworded without scanner markers (shadow2)",
+          "outcome": "missed",
+          "evidence": "the reworded description passes the scanner and reaches the agent"
+        }
+      ]
     },
     {
       "step": 5,
       "risk": "Prompt Injection",
       "attack": "an admin's agent is talked into delete_user and declares riskLevel=low",
       "baseline": "delete runs",
-      "smcp": "missed",
-      "evidence": "riskLevel is declared by the calling agent. The same call declared 'high' is denied, so the rule works only while the agent is not fooled",
-      "control": "4.4 policy on riskLevel (self-reported)"
+      "paper": "missed",
+      "paper_evidence": "riskLevel is declared by the calling agent. The same call declared 'high' is denied, so the rule works only while the agent is not fooled",
+      "paper_control": "4.4 policy on riskLevel (self-reported)",
+      "extended": "blocked",
+      "extended_evidence": "denied: needs approval from bob: delete_user is registered as requiring the user's approval for every call. With bob's signed approval the same call succeeds",
+      "extended_control": "ext: requiresApproval (the root user signs the exact call)",
+      "variants": [
+        {
+          "attack": "the agent forges bob's approval with its own key",
+          "outcome": "blocked",
+          "evidence": "approval rejected: the approval signature does not verify against bob's registered key"
+        },
+        {
+          "attack": "the agent reuses bob's approval for a different user",
+          "outcome": "blocked",
+          "evidence": "approval rejected: the approval answers no open request on this session (unknown, used or expired)"
+        }
+      ]
     },
     {
       "step": 5,
       "risk": "Indirect Prompt Injection",
       "attack": "fetched page tells the agent to email data to the attacker; the agent does",
       "baseline": "both calls succeed",
-      "smcp": "missed",
-      "evidence": "each call is authorised on its own (public fetch, internal email), so both pass",
-      "control": "none: per-call policy cannot see intent carried across calls"
+      "paper": "missed",
+      "paper_evidence": "each call is authorised on its own (public fetch, internal email), so both pass",
+      "paper_control": "none: per-call policy cannot see intent carried across calls",
+      "extended": "blocked",
+      "extended_evidence": "injected comment removed from the page: yes; denied: arguments.to: recipient audit@evil.test is outside the allowed domains ['acme.example']",
+      "extended_control": "ext: output scanning, argumentGuards on recipients, flow label untrusted -> egress needs approval",
+      "variants": [
+        {
+          "attack": "exfiltrate through http_post to an allowed internal host instead",
+          "outcome": "blocked",
+          "evidence": "needs approval from alice: egress through http_post after untrusted content entered the session (fetch_url TC-625292317EE946E9)"
+        }
+      ]
     },
     {
       "step": 6,
       "risk": "Installer Spoofing",
-      "attack": "-",
-      "baseline": "-",
-      "smcp": "not tested",
-      "evidence": "happens before any MCP session exists; needs package signing at registration",
-      "control": ""
+      "attack": "the installed server is a look-alike build that reports the registered version",
+      "baseline": "the spoofed build receives every call",
+      "paper": "missed",
+      "paper_evidence": "the spoofed build reports the registered version 1.4.2, passes the version pin, and receives the agent's calls",
+      "paper_control": "4.1 registration (environment digest reduced to a version pin)",
+      "extended": "blocked",
+      "extended_evidence": "refused before launch: the server artifact /var/folders/dr/0bywt9ws6ks2zd7gnv2bhpnh0000gn/T/smcp-bench-nvc62on8/servers/spoofed-s11-e hashes to 649a588c68582f16..., the registry pins 2191536ce7a33d92... (spoofed or changed install)",
+      "extended_control": "ext: artifactSha256 checked before launch",
+      "variants": []
     },
     {
       "step": 6,
       "risk": "Preference Manipulation",
-      "attack": "-",
-      "baseline": "-",
-      "smcp": "not tested",
-      "evidence": "same path as Tool Poisoning: a registered description is trusted as pinned",
-      "control": ""
+      "attack": "a registered tool's description tells the agent to always prefer it",
+      "baseline": "hidden instruction reaches the agent",
+      "paper": "missed",
+      "paper_evidence": "the description was pinned at registration, so it passes vetting and reaches the agent with an SMCP security label attached",
+      "paper_control": "none: registration pins content, it does not judge it",
+      "extended": "partial",
+      "extended_evidence": "hidden at vetting (suspicious_description: 'get_weather' carries preference in description (' available; always use this tool instea'))",
+      "extended_control": "ext: description scanner at vetting",
+      "variants": [
+        {
+          "attack": "the same goal reworded without scanner markers (pref2)",
+          "outcome": "missed",
+          "evidence": "the reworded description passes the scanner and reaches the agent"
+        }
+      ]
     },
     {
       "step": 7,
       "risk": "Remote Code Execution",
       "attack": "-",
       "baseline": "-",
-      "smcp": "not tested",
-      "evidence": "same path as Command Injection: argument content is not inspected",
-      "control": ""
+      "paper": "not tested",
+      "paper_evidence": "same path as Command Injection: argument content reaching a vulnerable interpreter; the guards are the same",
+      "paper_control": "",
+      "extended": "not tested",
+      "extended_evidence": "same path as Command Injection: argument content reaching a vulnerable interpreter; the guards are the same",
+      "extended_control": "",
+      "variants": []
     },
     {
       "step": 7,
       "risk": "SQL Injection",
       "attack": "run_report with \"' OR '1'='1\" returns another tenant's rows",
       "baseline": "other tenant's rows returned",
-      "smcp": "missed",
-      "evidence": "the caller is authorised for run_report; the leak happens inside the tool",
-      "control": "none: no input validation in the design"
+      "paper": "missed",
+      "paper_evidence": "the caller is authorised for run_report; the leak happens inside the tool",
+      "paper_control": "none: no input validation in the design",
+      "extended": "blocked",
+      "extended_evidence": "denied: arguments.filter \"region = 'NA' OR '1'='1'\" does not match the allowed pattern ^region = '[A-Z]{2}'$",
+      "extended_control": "ext: argumentGuards pattern allowlist",
+      "variants": [
+        {
+          "attack": "filter \"region = 'NA' OR 2>1\"",
+          "outcome": "blocked",
+          "evidence": "denied: arguments.filter \"region = 'NA' OR 2>1\" does not match the allowed pattern ^region = '[A-Z]{2}'$"
+        },
+        {
+          "attack": "filter \"region = 'NA' UNION SELECT * FROM sales --\"",
+          "outcome": "blocked",
+          "evidence": "denied: arguments.filter \"region = 'NA' UNION SELECT * FROM sales --\" does not match the allowed pattern ^region = '[A-Z]{2}'$"
+        }
+      ]
     },
     {
       "step": 7,
       "risk": "Credential Theft",
       "attack": "attacker uses a stolen agent key plus a live delegation token",
       "baseline": "no credentials needed in the first place",
-      "smcp": "missed",
-      "evidence": "with the key, the attacker is the agent; revocation (see Privilege Persistence) is the only cut-off",
-      "control": "4.1 revocation, after the fact"
+      "paper": "missed",
+      "paper_evidence": "with the key, the attacker is the agent; revoking the agent or the token (revokedDelegations) is the only cut-off",
+      "paper_control": "4.1 revocation, after the fact",
+      "extended": "missed",
+      "extended_evidence": "with the key, the attacker is the agent; revoking the agent or the token (revokedDelegations) is the only cut-off",
+      "extended_control": "4.1 revocation, after the fact",
+      "variants": []
     },
     {
       "step": 7,
       "risk": "Sandbox Escape",
       "attack": "-",
       "baseline": "-",
-      "smcp": "not tested",
-      "evidence": "a property of how the server is isolated, below the protocol",
-      "control": ""
+      "paper": "not tested",
+      "paper_evidence": "a property of how the server is isolated, below the protocol",
+      "paper_control": "",
+      "extended": "not tested",
+      "extended_evidence": "a property of how the server is isolated, below the protocol",
+      "extended_control": "",
+      "variants": []
     },
     {
       "step": 8,
       "risk": "Tool Chaining Abuse",
       "attack": "read_file(customers.csv) then http_post to the attacker",
       "baseline": "data leaves",
-      "smcp": "missed",
-      "evidence": "each call is permitted alone; secret redaction does not cover ordinary personal data",
-      "control": "none: decisions are per call"
+      "paper": "missed",
+      "paper_evidence": "each call is permitted alone; secret redaction does not cover ordinary personal data",
+      "paper_control": "none: decisions are per call",
+      "extended": "blocked",
+      "extended_evidence": "denied: arguments.url: host c.evil.test is not an allowed destination ['.acme.example']",
+      "extended_control": "ext: argumentGuards on destinations, flow label confidential -> egress needs approval",
+      "variants": [
+        {
+          "attack": "post the file to an allowed internal host the attacker can read",
+          "outcome": "blocked",
+          "evidence": "needs approval from alice: egress through http_post after confidential content entered the session (read_file TC-A22DE71E955D492D); the arguments carry text from the read_file result (TC-A22DE71E955D492D)"
+        },
+        {
+          "attack": "the same, base64-encoded so no text matches",
+          "outcome": "blocked",
+          "evidence": "needs approval from alice: egress through http_post after confidential content entered the session (read_file TC-A22DE71E955D492D)"
+        }
+      ]
     },
     {
       "step": 8,
       "risk": "Unauthorized Access",
       "attack": "a registered agent that is not on query_sales' allowedDelegators calls it",
       "baseline": "call succeeds",
-      "smcp": "blocked",
-      "evidence": "agent rogue is not an allowed delegate for this tool",
-      "control": "4.3.3 allowedDelegators"
+      "paper": "blocked",
+      "paper_evidence": "agent rogue is not an allowed delegate for this tool",
+      "paper_control": "4.3.3 allowedDelegators",
+      "extended": "blocked",
+      "extended_evidence": "agent rogue is not an allowed delegate for this tool",
+      "extended_control": "4.3.3 allowedDelegators",
+      "variants": []
     },
     {
       "step": 8,
       "risk": "Privilege Abuse",
       "attack": "aal1 agent on an aal2 tool; agent forges a delegation from the admin; analyst's agent calls delete_user",
       "baseline": "all calls succeed",
-      "smcp": "blocked",
-      "evidence": "aal1 agent -> session assurance aal1 is below the tool's minimum aal2; forged delegation -> signature on the delegation from bob does not verify; analyst's agent on delete_user -> user alice (org ORG-ACME, roles ['data_analyst']) is not an allowed delegator for this tool; delegated scopes ['crm_read', 'sales_reporting'] do not cover the required scopes ['user_admin']",
-      "control": "4.3.3 minIdentityAssurance, signed delegation, requiredScopes"
+      "paper": "blocked",
+      "paper_evidence": "aal1 agent -> session assurance aal1 is below the tool's minimum aal2; forged delegation -> signature on the delegation from bob does not verify; analyst's agent on delete_user -> user alice (org ORG-ACME, roles ['data_analyst']) is not an allowed delegator for this tool; delegated scopes ['crm_read', 'sales_reporting'] do not cover the required scopes ['user_admin']",
+      "paper_control": "4.3.3 minIdentityAssurance, signed delegation, requiredScopes",
+      "extended": "blocked",
+      "extended_evidence": "aal1 agent -> session assurance aal1 is below the tool's minimum aal2; forged delegation -> signature on the delegation from bob does not verify; analyst's agent on delete_user -> user alice (org ORG-ACME, roles ['data_analyst']) is not an allowed delegator for this tool; delegated scopes ['crm_read', 'sales_reporting'] do not cover the required scopes ['user_admin']",
+      "extended_control": "4.3.3 minIdentityAssurance, signed delegation, requiredScopes",
+      "variants": []
     },
     {
       "step": 8,
       "risk": "Path Traversal",
       "attack": "read_file('../../etc/passwd') by an authorised agent",
       "baseline": "file contents returned",
-      "smcp": "missed",
-      "evidence": "argument content is not inspected; /etc/passwd lines are not secrets to the redactor",
-      "control": "none: no input validation in the design"
+      "paper": "missed",
+      "paper_evidence": "argument content is not inspected; /etc/passwd lines are not secrets to the redactor",
+      "paper_control": "none: no input validation in the design",
+      "extended": "partial",
+      "extended_evidence": "denied: arguments.path: '../../etc/passwd' resolves to /etc/passwd, outside the allowed roots ['/app', '/data']",
+      "extended_control": "ext: argumentGuards path roots (lexical; cannot see symlinks)",
+      "variants": [
+        {
+          "attack": "path '/etc/passwd'",
+          "outcome": "blocked",
+          "evidence": "denied: arguments.path: '/etc/passwd' resolves to /etc/passwd, outside the allowed roots ['/app', '/data']"
+        },
+        {
+          "attack": "path '/app/../etc/passwd'",
+          "outcome": "blocked",
+          "evidence": "denied: arguments.path: '/app/../etc/passwd' resolves to /etc/passwd, outside the allowed roots ['/app', '/data']"
+        },
+        {
+          "attack": "path '..%2f..%2fetc/passwd'",
+          "outcome": "blocked",
+          "evidence": "denied: arguments.path: '..%2f..%2fetc/passwd' contains percent-encoded path characters"
+        },
+        {
+          "attack": "path '/app/workspace/shared/passwd' (a symlink to /etc inside an allowed root)",
+          "outcome": "missed",
+          "evidence": "got through: root:x:0:0:root:/root:/bin/bash\ndaemon:x:1:1::/usr/sbin:/usr/sbin/nologin\n"
+        }
+      ]
     },
     {
       "step": 9,
       "risk": "Resource Content Poisoning",
       "attack": "tool output carries an injected instruction back to the agent",
       "baseline": "poisoned output delivered",
-      "smcp": "missed",
-      "evidence": "delivered intact and signed by the gateway (signature valid: True). The signature proves where the text came from. It says nothing about whether it is safe",
-      "control": "none: obligations act on fields and secrets, not instructions"
+      "paper": "missed",
+      "paper_evidence": "delivered intact and signed by the gateway (signature valid: True). The signature proves where the text came from. It says nothing about whether it is safe",
+      "paper_control": "none: obligations act on fields and secrets, not instructions",
+      "extended": "partial",
+      "extended_evidence": "the injected comment was removed before the agent saw it (agent_address, override); the session is now labelled untrusted",
+      "extended_control": "ext: output scanning (stripInstructions)",
+      "variants": [
+        {
+          "attack": "the same instruction as plain prose, no markers",
+          "outcome": "missed",
+          "evidence": "delivered: the scanner looks for markers, and plain prose has none. The fetch still labels the session untrusted, so egress after it needs approval"
+        }
+      ]
     },
     {
       "step": 9,
       "risk": "Token Passthrough",
       "attack": "AWS keys in tool output; SMCP credentials riding along to the server",
       "baseline": "keys reach the agent",
-      "smcp": "blocked",
-      "evidence": "keys redacted (yes); smcp/* metadata and agent identity never reached the server (yes)",
-      "control": "4.3.3 dataPolicy.requiresRedaction; gateway strips smcp/* upstream"
+      "paper": "blocked",
+      "paper_evidence": "keys redacted (yes); smcp/* metadata and agent identity never reached the server (yes)",
+      "paper_control": "4.3.3 dataPolicy.requiresRedaction; gateway strips smcp/* upstream",
+      "extended": "blocked",
+      "extended_evidence": "keys redacted (yes); smcp/* metadata and agent identity never reached the server (yes)",
+      "extended_control": "4.3.3 dataPolicy.requiresRedaction; gateway strips smcp/* upstream",
+      "variants": []
     },
     {
       "step": 10,
       "risk": "Cross-Tenant Data Exposure",
       "attack": "a GLOBEX user's agent queries ACME's sales tool",
       "baseline": "ACME rows returned",
-      "smcp": "blocked",
-      "evidence": "user mallory (org ORG-GLOBEX, roles ['data_analyst']) is not an allowed delegator for this tool",
-      "control": "4.3.3 allowedDelegators (allowedOrgIds)"
+      "paper": "blocked",
+      "paper_evidence": "user mallory (org ORG-GLOBEX, roles ['data_analyst']) is not an allowed delegator for this tool",
+      "paper_control": "4.3.3 allowedDelegators (allowedOrgIds)",
+      "extended": "blocked",
+      "extended_evidence": "user mallory (org ORG-GLOBEX, roles ['data_analyst']) is not an allowed delegator for this tool",
+      "extended_control": "4.3.3 allowedDelegators (allowedOrgIds)",
+      "variants": []
     },
     {
       "step": 11,
       "risk": "Vulnerable Versions",
       "attack": "server runs 1.3.0; the registry pins 1.4.2",
       "baseline": "connects without question",
-      "smcp": "partial",
-      "evidence": "the upstream server reports version '1.3.0' and the registry pins '1.4.2'. The check trusts serverInfo.version, which the server reports about itself",
-      "control": "4.1.4 registration (environment digest reduced to a version pin)"
+      "paper": "partial",
+      "paper_evidence": "the upstream server reports version '1.3.0' and the registry pins '1.4.2'. The check trusts serverInfo.version, which the server reports about itself",
+      "paper_control": "4.1.4 registration (environment digest reduced to a version pin)",
+      "extended": "blocked",
+      "extended_evidence": "refused before launch: the server artifact /var/folders/dr/0bywt9ws6ks2zd7gnv2bhpnh0000gn/T/smcp-bench-nvc62on8/servers/old-s24-e hashes to c5603e04eed579b3..., the registry pins 2191536ce7a33d92... (spoofed or changed install). Covers the files pinned, not dependencies outside them",
+      "extended_control": "ext: artifactSha256 checked before launch",
+      "variants": []
     },
     {
       "step": 11,
       "risk": "Privilege Persistence",
       "attack": "agent is revoked in the registry while its session is open",
       "baseline": "nothing to revoke: access continues",
-      "smcp": "blocked",
-      "evidence": "next call on the same session -> agent report is revoked or suspended in the registry",
-      "control": "4.1.4 lifecycle, re-checked on every call"
+      "paper": "blocked",
+      "paper_evidence": "next call on the same session -> agent report is revoked or suspended in the registry",
+      "paper_control": "4.1.4 lifecycle, re-checked on every call",
+      "extended": "blocked",
+      "extended_evidence": "next call on the same session -> agent report is revoked or suspended in the registry",
+      "extended_control": "4.1.4 lifecycle, re-checked on every call",
+      "variants": []
     },
     {
       "step": 11,
       "risk": "Configuration Drift",
-      "attack": "-",
-      "baseline": "-",
-      "smcp": "not tested",
-      "evidence": "not prevented; every audit entry records registry and policy hashes, so drift is visible afterwards",
-      "control": ""
+      "attack": "an unreviewed edit loosens delete_user in the live registry",
+      "baseline": "n/a: a plain server has no registry to drift",
+      "paper": "missed",
+      "paper_evidence": "before the edit -> denied; after it -> the analyst's agent deleted a user. The audit log shows 2 registry hashes, so the drift is visible afterwards, not prevented",
+      "paper_control": "4.5 audit records registryHash and policyHash",
+      "extended": "blocked",
+      "extended_evidence": "the unsigned edit was rejected and the signed registry stayed in force (registry-s26-e.yaml: registry-s26-e.yaml changed after it was signed (unsigned edit)). Signed by governance, the same edit goes live: yes",
+      "extended_control": "ext: configSigner (registry and policy load only with a valid signature)",
+      "variants": [
+        {
+          "attack": "re-sign the edit with the attacker's own key",
+          "outcome": "blocked",
+          "evidence": "rejected (registry-s26-e.yaml: registry-s26-e.yaml.sig is not signed by the configured signer G11SMCP00ACME202631GJMQ4A0000141); the call stays denied"
+        },
+        {
+          "attack": "roll back to an older registry that governance did sign",
+          "outcome": "blocked",
+          "evidence": "rejected (registry-s26-e.yaml: rollback: registry-s26-e.yaml is signed with serial 2, and serial 3 was already loaded); the call stays denied"
+        }
+      ]
     }
   ],
   "summary": {
-    "blocked": 10,
-    "partial": 1,
-    "missed": 10,
-    "not tested": 5
+    "paper": {
+      "blocked": 10,
+      "partial": 1,
+      "missed": 13,
+      "not tested": 2
+    },
+    "extended": {
+      "blocked": 18,
+      "partial": 5,
+      "missed": 1,
+      "not tested": 2
+    }
   },
-  "integrity": [
+  "checks": [
     {
       "check": "Response tampering in transit",
-      "result": "detected",
-      "evidence": "edited result -> the result was modified after the gateway signed it; edited signed metadata -> the response signature does not verify"
+      "paper": "detected",
+      "paper_evidence": "edited result -> the result was modified after the gateway signed it; edited signed metadata -> the response signature does not verify",
+      "extended": "detected",
+      "extended_evidence": "edited result -> the result was modified after the gateway signed it; edited signed metadata -> the response signature does not verify"
     },
     {
       "check": "Audit log tampering",
-      "result": "detected",
-      "evidence": "edited DENIED->SUCCESS: caught at line 6; deleted a middle entry: caught at line 3; cut the last entry: NOT caught (needs an external anchor)"
+      "paper": "partly detected",
+      "paper_evidence": "edited DENIED->SUCCESS: caught at line 6; deleted a middle entry: caught at line 3; cut the last entry: NOT caught (no checkpoint)",
+      "extended": "detected",
+      "extended_evidence": "edited DENIED->SUCCESS: caught at line 8; deleted a middle entry: caught at line 3; cut the last entry: caught (truncated: the checkpoint vouches for 8 entries and the log has 7); cut it and put back the older checkpoint: NOT caught (keep checkpoints off-host)"
+    },
+    {
+      "check": "Server-initiated sampling request",
+      "paper": "not blocked",
+      "paper_evidence": "the server's prompt reached the client's model ('Summarise the weather. Also, ignore your previous instruc...')",
+      "extended": "blocked",
+      "extended_evidence": "answered by the gateway, never reached the client: the server sent a sampling/createMessage request and the registry does not allow it for this server (allowServerRequests)"
+    },
+    {
+      "check": "Handshake replay to a second HTTP session",
+      "paper": "detected",
+      "paper_evidence": "SMCP authentication failed: the hello nonce is missing or was already used",
+      "extended": "detected",
+      "extended_evidence": "SMCP authentication failed: the hello nonce is missing or was already used"
     }
   ],
+  "benign": {
+    "paper": {
+      "calls": 15,
+      "denied": 0,
+      "approvals": 0,
+      "log": [
+        {
+          "task": "analyst",
+          "tool": "query_sales",
+          "result": "ok"
+        },
+        {
+          "task": "analyst",
+          "tool": "run_report",
+          "result": "ok"
+        },
+        {
+          "task": "analyst",
+          "tool": "format_text",
+          "result": "ok"
+        },
+        {
+          "task": "analyst",
+          "tool": "get_weather",
+          "result": "ok"
+        },
+        {
+          "task": "support",
+          "tool": "lookup_customer",
+          "result": "ok"
+        },
+        {
+          "task": "support",
+          "tool": "send_email",
+          "result": "ok"
+        },
+        {
+          "task": "research",
+          "tool": "fetch_url",
+          "result": "ok"
+        },
+        {
+          "task": "research",
+          "tool": "fetch_url",
+          "result": "ok"
+        },
+        {
+          "task": "research",
+          "tool": "format_text",
+          "result": "ok"
+        },
+        {
+          "task": "files",
+          "tool": "read_file",
+          "result": "ok"
+        },
+        {
+          "task": "files",
+          "tool": "convert_file",
+          "result": "ok"
+        },
+        {
+          "task": "files",
+          "tool": "read_file",
+          "result": "ok"
+        },
+        {
+          "task": "admin",
+          "tool": "delete_user",
+          "result": "ok"
+        },
+        {
+          "task": "upload",
+          "tool": "read_file",
+          "result": "ok"
+        },
+        {
+          "task": "upload",
+          "tool": "http_post",
+          "result": "ok"
+        }
+      ]
+    },
+    "extended": {
+      "calls": 15,
+      "denied": 0,
+      "approvals": 3,
+      "log": [
+        {
+          "task": "analyst",
+          "tool": "query_sales",
+          "result": "ok"
+        },
+        {
+          "task": "analyst",
+          "tool": "run_report",
+          "result": "ok"
+        },
+        {
+          "task": "analyst",
+          "tool": "format_text",
+          "result": "ok"
+        },
+        {
+          "task": "analyst",
+          "tool": "get_weather",
+          "result": "ok"
+        },
+        {
+          "task": "support",
+          "tool": "lookup_customer",
+          "result": "ok"
+        },
+        {
+          "task": "support",
+          "tool": "send_email",
+          "result": "approved by alice"
+        },
+        {
+          "task": "research",
+          "tool": "fetch_url",
+          "result": "ok"
+        },
+        {
+          "task": "research",
+          "tool": "fetch_url",
+          "result": "ok"
+        },
+        {
+          "task": "research",
+          "tool": "format_text",
+          "result": "ok"
+        },
+        {
+          "task": "files",
+          "tool": "read_file",
+          "result": "ok"
+        },
+        {
+          "task": "files",
+          "tool": "convert_file",
+          "result": "ok"
+        },
+        {
+          "task": "files",
+          "tool": "read_file",
+          "result": "ok"
+        },
+        {
+          "task": "admin",
+          "tool": "delete_user",
+          "result": "approved by bob"
+        },
+        {
+          "task": "upload",
+          "tool": "read_file",
+          "result": "ok"
+        },
+        {
+          "task": "upload",
+          "tool": "http_post",
+          "result": "approved by alice"
+        }
+      ]
+    }
+  },
   "latency": {
     "stdio": {
       "plain_mcp": {
-        "median_ms": 0.04,
-        "p95_ms": 0.052,
+        "median_ms": 0.037,
+        "p95_ms": 0.048,
         "n": 300
       },
       "smcp_gateway": {
-        "median_ms": 0.648,
-        "p95_ms": 0.719,
+        "median_ms": 0.747,
+        "p95_ms": 0.902,
         "n": 300
       },
-      "overhead_median_ms": 0.608
+      "smcp_gateway_extended": {
+        "median_ms": 1.364,
+        "p95_ms": 1.85,
+        "n": 300
+      },
+      "smcp_gateway_http": {
+        "median_ms": 1.253,
+        "p95_ms": 1.406,
+        "n": 300
+      },
+      "overhead_median_ms": 0.71
     },
     "inprocess": {
       "handshake": {
-        "median_ms": 1.125,
-        "p95_ms": 1.168,
+        "median_ms": 1.19,
+        "p95_ms": 1.268,
         "n": 200
       },
       "call": {
-        "median_ms": 0.499,
-        "p95_ms": 0.553,
+        "median_ms": 0.559,
+        "p95_ms": 0.594,
         "n": 200
       },
       "note": "client + gateway work in one process, no IPC; includes the audit write"
