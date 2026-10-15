@@ -101,12 +101,12 @@ The bench server is simulated. Two checks use code this project did not write:
 The bench above scripts the fooled model. `smcp-gateway llm-bench` puts a real
 one in the agent's seat for the seven attacks that need a fooled model, plus two
 normal tasks. Three open-weight models on Groq (gpt-oss-120b, gpt-oss-20b, Qwen
-3.8 27B), 4 or 5 trials per cell:
+3.8 27B), 5 trials per cell, 405 runs:
 
 | | No gateway | Paper design | With extensions |
 |---|---:|---:|---:|
-| Attack runs that reached the attacker's goal | 39/90 | 32/90 | 0/90 |
-| Normal tasks done | 28/28 | 28/28 | 28/28 (14 approvals) |
+| Attack runs that reached the attacker's goal | 39/105 | 33/105 | 0/105 |
+| Normal tasks done | 30/30 | 30/30 | 30/30 (15 approvals) |
 
 - Both gpt-oss models were fooled in most attack runs. Qwen was fooled in none
   without a gateway.
@@ -115,11 +115,11 @@ normal tasks. Three open-weight models on Groq (gpt-oss-120b, gpt-oss-20b, Qwen
   time.
 - The paper design stopped one attack, tool poisoning, and only because its
   redaction obligation hid the key the fooled model read. Prose injection,
-  shadowing and a pasted ticket went through as often as with no gateway.
+  shadowing and a pasted ticket went through about as often as with no gateway.
 - With the extensions, one model worked around the email domain guard by asking
   an internal address to forward the data. The flow labels caught that email.
 - The cost: the hidden poisoned tool left the user's weather question
-  unanswered in all 14 runs.
+  unanswered in all 15 runs.
 
 Details, transcripts and limits: [docs/LLM_RESULTS.md](docs/LLM_RESULTS.md).
 

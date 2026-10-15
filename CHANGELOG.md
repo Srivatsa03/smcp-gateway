@@ -18,8 +18,8 @@ A real model in the agent's seat:
   `~/.ssh/id_ed25519`, for the tool poisoning scenario.
 - Results for three open-weight models on Groq:
   [docs/LLM_RESULTS.md](docs/LLM_RESULTS.md). Attack runs that reached the
-  attacker's goal: 39 of 90 with no gateway, 32 of 90 with the paper design,
-  0 of 90 with the extensions.
+  attacker's goal: 39 of 105 with no gateway, 33 of 105 with the paper design,
+  0 of 105 with the extensions.
 
 ## 0.2.0
 

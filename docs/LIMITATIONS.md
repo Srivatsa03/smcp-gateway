@@ -37,9 +37,9 @@
   open-weight models served by Groq's free tier. A provider can change what a
   model id serves, so the numbers describe that day. No closed frontier model
   was tested.
-- **Four or five trials per cell.** A difference of one or two runs is noise.
-  Qwen hit the free tier's daily token quota, so it has 4 trials and no
-  reworded-variant runs.
+- **Five trials per cell.** A difference of a few runs can be noise. Qwen
+  followed the shadowing text in 0 of 5 runs without a gateway and 3 of 5 with
+  the paper design, on byte-identical input.
 - **The user is simulated and careful.** When the gateway asks for approval, the
   simulated user approves only what the task asked for (an email to
   `dana.ops@acme.example`) and declines the rest. A person who approves without
